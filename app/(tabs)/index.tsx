@@ -1,17 +1,18 @@
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, Text, ScrollView, TouchableOpacity, Dimensions, Alert } from 'react-native';
+import { View, StyleSheet, Text, ScrollView, TouchableOpacity, Dimensions, Alert, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { subDays, isToday, isSameDay, format, differenceInHours, differenceInMinutes, eachDayOfInterval } from 'date-fns';
 import { useHealth } from '../../context/HealthContext';
 import { useAuth } from '../../context/AuthContext';
-import { CircularProgress } from '../../components/common/CircularProgress';
-import { LineChart, BarChart, PieChart } from 'react-native-chart-kit';
+import { StepCounter } from '../../components/health/StepCounter';
+import { LineChart } from 'react-native-chart-kit';
 import { LinearGradient } from 'expo-linear-gradient';
-import { differenceInHours, differenceInMinutes, subDays, eachDayOfInterval, format as formatDate, isToday, isSameDay } from 'date-fns';
-import { format } from 'date-fns';
-import { getWeeklyHealthData, getDailyHealthData } from '../../services/storage/firestore';
+import { CircularProgress } from '../../components/common/CircularProgress';
 import { DailyHealthData } from '../../types';
+import { getDailyHealthData, getWeeklyHealthData } from '../../services/storage/firestore';
+import Constants from 'expo-constants';
 
 const screenWidth = Dimensions.get('window').width;
 
@@ -26,6 +27,11 @@ export default function DashboardScreen() {
   const [selectedDateData, setSelectedDateData] = useState<DailyHealthData | null>(null);
   const [dateDataMap, setDateDataMap] = useState<Map<string, DailyHealthData>>(new Map());
   const [loadingDateData, setLoadingDateData] = useState(false);
+  const [selectedPoint, setSelectedPoint] = useState<{ date: string; value: number; index: number } | null>(null);
+  const [LineGraph, setLineGraph] = useState<any>(null);
+  
+  const isExpoGo = Constants.appOwnership === 'expo';
+  const canUseGraph = Platform.OS !== 'web' && !isExpoGo;
 
   // Get personalized greeting based on time
   const getGreeting = () => {
@@ -70,10 +76,36 @@ export default function DashboardScreen() {
     }
   }, [todayData, selectedDate]);
 
+  // Dynamically import LineGraph
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!canUseGraph) {
+      setLineGraph(null);
+      return undefined;
+    }
+
+    (async () => {
+      try {
+        const Graph = await import('react-native-graph');
+        if (!cancelled) setLineGraph(() => Graph.LineGraph);
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('react-native-graph is not available. Graph features will be disabled.');
+          setLineGraph(null);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canUseGraph]);
+
   const loadDateData = async () => {
     if (!user) return;
     try {
-      const dates = datePickerDates.map(d => formatDate(d, 'yyyy-MM-dd'));
+      const dates = datePickerDates.map(d => format(d, 'yyyy-MM-dd'));
       const dataPromises = dates.map(date => getDailyHealthData(user.uid, date));
       const results = await Promise.all(dataPromises);
       
@@ -92,7 +124,7 @@ export default function DashboardScreen() {
   const loadSelectedDateData = async (forceRefresh: boolean = false) => {
     if (!user) return;
     
-    const dateStr = formatDate(selectedDate, 'yyyy-MM-dd');
+    const dateStr = format(selectedDate, 'yyyy-MM-dd');
     
     try {
       setLoadingDateData(true);
@@ -229,7 +261,7 @@ export default function DashboardScreen() {
   const heartRate = isToday(selectedDate) ? (healthMetrics.heartRate || 0) : (displayData?.heartRate || 0);
   const restingHeartRate = isToday(selectedDate) ? (healthMetrics.restingHeartRate || 0) : (displayData?.restingHeartRate || 0);
 
-  // Prepare chart data
+  // Prepare chart data for labels (used in graph labels)
   const prepareWeeklyChartData = () => {
     const days = eachDayOfInterval({
       start: subDays(new Date(), 6),
@@ -238,34 +270,109 @@ export default function DashboardScreen() {
 
     const dataMap = new Map(weeklyData.map(d => [d.date, d]));
 
-    const labels = days.map(day => formatDate(day, 'EEE').substring(0, 1));
+    const labels = days.map(day => format(day, 'EEE').substring(0, 1));
     
     if (selectedChart === 'steps') {
       const data = days.map(day => {
-        const dateStr = formatDate(day, 'yyyy-MM-dd');
+        const dateStr = format(day, 'yyyy-MM-dd');
         return dataMap.get(dateStr)?.steps || 0;
       });
       return { labels, data };
     } else if (selectedChart === 'calories') {
       const consumedData = days.map(day => {
-        const dateStr = formatDate(day, 'yyyy-MM-dd');
+        const dateStr = format(day, 'yyyy-MM-dd');
         return dataMap.get(dateStr)?.caloriesConsumed || 0;
       });
       const burnedData = days.map(day => {
-        const dateStr = formatDate(day, 'yyyy-MM-dd');
+        const dateStr = format(day, 'yyyy-MM-dd');
         return dataMap.get(dateStr)?.caloriesBurned || 0;
       });
       return { labels, consumedData, burnedData };
     } else {
       const data = days.map(day => {
-        const dateStr = formatDate(day, 'yyyy-MM-dd');
+        const dateStr = format(day, 'yyyy-MM-dd');
         return dataMap.get(dateStr)?.waterIntake || 0;
       });
       return { labels, data };
     }
   };
 
+  // Prepare graph points for react-native-graph (Skia-based)
+  const prepareGraphPoints = (): any[] => {
+    const days = eachDayOfInterval({
+      start: subDays(new Date(), 6),
+      end: new Date(),
+    });
+
+    const dataMap = new Map(weeklyData.map(d => [d.date, d]));
+
+    if (selectedChart === 'steps') {
+      return days.map((day, index) => {
+        const dateStr = format(day, 'yyyy-MM-dd');
+        const value = dataMap.get(dateStr)?.steps || 0;
+        return {
+          date: day,
+          value: value,
+        };
+      });
+    } else if (selectedChart === 'calories') {
+      // For calories, we'll use consumed as primary, but can show both
+      return days.map((day) => {
+        const dateStr = format(day, 'yyyy-MM-dd');
+        const consumed = dataMap.get(dateStr)?.caloriesConsumed || 0;
+        const burned = dataMap.get(dateStr)?.caloriesBurned || 0;
+        // Return net calories
+        return {
+          date: day,
+          value: consumed - burned,
+        };
+      });
+    } else {
+      return days.map((day) => {
+        const dateStr = format(day, 'yyyy-MM-dd');
+        const value = dataMap.get(dateStr)?.waterIntake || 0;
+        return {
+          date: day,
+          value: value,
+        };
+      });
+    }
+  };
+
   const chartData = prepareWeeklyChartData();
+  const graphPoints = prepareGraphPoints();
+
+  // Get chart colors and labels
+  const getChartConfig = () => {
+    switch (selectedChart) {
+      case 'steps':
+        return {
+          color: '#4CAF50',
+          gradientFillColors: ['#4CAF50', '#66BB6A'],
+          label: 'Steps',
+          formatValue: (value: number) => Math.round(value).toLocaleString(),
+          unit: '',
+        };
+      case 'calories':
+        return {
+          color: '#FF6B35',
+          gradientFillColors: ['#FF6B35', '#FF8A65'],
+          label: 'Net Calories',
+          formatValue: (value: number) => `${Math.round(value) > 0 ? '+' : ''}${Math.round(value)}`,
+          unit: ' kcal',
+        };
+      case 'water':
+        return {
+          color: '#2196F3',
+          gradientFillColors: ['#2196F3', '#42A5F5'],
+          label: 'Water',
+          formatValue: (value: number) => Math.round(value).toString(),
+          unit: ' glasses',
+        };
+    }
+  };
+
+  const chartConfig = getChartConfig();
 
   // Prepare meal type pie chart data
   const mealTypeData = [
@@ -298,26 +405,6 @@ export default function DashboardScreen() {
       legendFontSize: 12,
     },
   ].filter(item => item.calories > 0);
-
-  const chartConfig = {
-    backgroundColor: '#fff',
-    backgroundGradientFrom: '#fff',
-    backgroundGradientTo: '#fff',
-    decimalPlaces: 0,
-    color: (opacity = 1) => `rgba(76, 175, 80, ${opacity})`,
-    labelColor: (opacity = 1) => `rgba(0, 0, 0, ${opacity})`,
-    style: {
-      borderRadius: 16,
-    },
-    propsForDots: {
-      r: '6',
-      strokeWidth: '2',
-      stroke: '#4CAF50',
-    },
-    propsForBackgroundLines: {
-      strokeDasharray: '',
-    },
-  };
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -354,10 +441,10 @@ export default function DashboardScreen() {
             contentContainerStyle={styles.datePickerScroll}
           >
             {datePickerDates.map((date, index) => {
-              const dateStr = formatDate(date, 'yyyy-MM-dd');
+              const dateStr = format(date, 'yyyy-MM-dd');
               const isSelected = isSameDay(date, selectedDate);
-              const dayNumber = formatDate(date, 'd');
-              const dayName = formatDate(date, 'EEE');
+              const dayNumber = format(date, 'd');
+              const dayName = format(date, 'EEE');
               const isTodayDate = isToday(date);
               
               return (
@@ -406,95 +493,130 @@ export default function DashboardScreen() {
         
         {/* Main Sleep/Fasting Metric */}
         <View style={styles.mainMetricContainer}>
-          <CircularProgress
-            size={200}
-            strokeWidth={14}
-            progress={fastingProgress}
-            color="#9B59B6"
-            backgroundColor="#E8E8E8"
-          >
-            <Ionicons name="moon" size={40} color="#9B59B6" />
-          </CircularProgress>
-          <Text style={styles.mainMetricValue}>{fastingDuration}</Text>
-          <Text style={styles.mainMetricLabel}>Fasting</Text>
+          <View style={styles.fastingCard}>
+            <CircularProgress
+              size={180}
+              strokeWidth={12}
+              progress={fastingProgress}
+              color="#9B59B6"
+              backgroundColor="#F3E5F5"
+            >
+              <View style={styles.fastingIconContainer}>
+                <LinearGradient
+                  colors={['#9B59B6', '#8E44AD']}
+                  style={styles.fastingIconGradient}
+                >
+                  <Ionicons name="moon" size={36} color="#fff" />
+                </LinearGradient>
+              </View>
+            </CircularProgress>
+            <View style={styles.fastingTextContainer}>
+              <Text style={styles.mainMetricValue}>{fastingDuration}</Text>
+              <Text style={styles.mainMetricLabel}>Fasting</Text>
+            </View>
+          </View>
         </View>
 
         {/* Activity Metrics */}
         <View style={styles.activityMetrics}>
-          <View style={styles.activityCircle}>
-            <View style={styles.activityDot} />
-            <Ionicons name="footsteps" size={32} color="#4CAF50" />
-            <Text style={styles.activityValue}>{steps.toLocaleString()}</Text>
-            <Text style={styles.activityLabel}>Steps</Text>
+          <View style={styles.activityCard}>
+            <LinearGradient
+              colors={['#E8F5E9', '#C8E6C9']}
+              style={styles.activityCardGradient}
+            >
+              <View style={styles.activityIconWrapper}>
+                <Ionicons name="footsteps" size={28} color="#4CAF50" />
+              </View>
+              <Text style={styles.activityValue}>{steps.toLocaleString()}</Text>
+              <Text style={styles.activityLabel}>Steps</Text>
+            </LinearGradient>
           </View>
           
-          <View style={styles.activityCircle}>
-            <View style={styles.activityDot} />
-            <Ionicons name="flash" size={32} color="#4CAF50" />
-            <Text style={styles.activityValue}>{zoneMinutes}</Text>
-            <Text style={styles.activityLabel}>Zone Min</Text>
+          <View style={styles.activityCard}>
+            <LinearGradient
+              colors={['#E1F5FE', '#B3E5FC']}
+              style={styles.activityCardGradient}
+            >
+              <View style={styles.activityIconWrapper}>
+                <Ionicons name="flash" size={28} color="#2196F3" />
+              </View>
+              <Text style={[styles.activityValue, { color: '#2196F3' }]}>{zoneMinutes}</Text>
+              <Text style={styles.activityLabel}>Zone Min</Text>
+            </LinearGradient>
           </View>
           
-          <View style={styles.activityCircle}>
-            <View style={styles.activityDot} />
-            <Ionicons name="leaf" size={32} color="#4CAF50" />
-            <Text style={styles.activityValue}>{mindfulDays} of 6</Text>
-            <Text style={styles.activityLabel}>Mindful days</Text>
+          <View style={styles.activityCard}>
+            <LinearGradient
+              colors={['#F1F8E9', '#DCEDC8']}
+              style={styles.activityCardGradient}
+            >
+              <View style={styles.activityIconWrapper}>
+                <Ionicons name="leaf" size={28} color="#8BC34A" />
+              </View>
+              <Text style={[styles.activityValue, { color: '#8BC34A' }]}>{mindfulDays} of 6</Text>
+              <Text style={styles.activityLabel}>Mindful days</Text>
+            </LinearGradient>
           </View>
         </View>
 
         {/* Water Intake Section */}
         <View style={styles.waterSection}>
-          <Text style={styles.sectionTitle}>Water Intake</Text>
           <View style={styles.waterCard}>
-            <View style={styles.waterContent}>
-              <View style={styles.waterProgressContainer}>
-                <View style={styles.waterProgressBar}>
-                  <View style={[
+            <View style={styles.waterHeader}>
+              <View style={styles.waterTitleContainer}>
+                <Ionicons name="water" size={24} color="#2196F3" />
+                <Text style={styles.sectionTitle}>Water Intake</Text>
+              </View>
+              <TouchableOpacity 
+                style={[
+                  styles.waterAddButton,
+                  waterIntake >= waterGoal && styles.waterAddButtonDisabled
+                ]}
+                onPress={() => router.push('/(tabs)/water')}
+                disabled={waterIntake >= waterGoal}
+              >
+                {waterIntake < waterGoal ? (
+                  <LinearGradient
+                    colors={['#2196F3', '#1976D2']}
+                    style={styles.waterButtonGradient}
+                  >
+                    <Ionicons name="add" size={20} color="#fff" />
+                  </LinearGradient>
+                ) : (
+                  <View style={styles.waterButtonComplete}>
+                    <Ionicons name="checkmark" size={20} color="#fff" />
+                  </View>
+                )}
+              </TouchableOpacity>
+            </View>
+            <View style={styles.waterProgressContainer}>
+              <View style={styles.waterProgressBar}>
+                <LinearGradient
+                  colors={waterIntake >= waterGoal 
+                    ? ['#4CAF50', '#66BB6A'] 
+                    : ['#2196F3', '#42A5F5']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={[
                     styles.waterProgressFill, 
-                    { 
-                      width: `${waterProgress}%`,
-                      backgroundColor: waterIntake >= waterGoal ? '#4CAF50' : '#2196F3'
-                    }
-                  ]} />
-                </View>
+                    { width: `${waterProgress}%` }
+                  ]}
+                />
+              </View>
+              <View style={styles.waterStats}>
                 <Text style={styles.waterText}>
-                  {waterIntake} / {waterGoal} glasses
-                  {waterIntake >= waterGoal && ' ✓'}
+                  <Text style={styles.waterAmount}>{waterIntake}</Text>
+                  <Text style={styles.waterDivider}> / </Text>
+                  <Text style={styles.waterGoal}>{waterGoal} glasses</Text>
                 </Text>
                 {waterIntake >= waterGoal && (
-                  <Text style={styles.waterGoalAchieved}>
-                    🎉 Daily goal achieved!
-                  </Text>
+                  <View style={styles.waterBadge}>
+                    <Ionicons name="trophy" size={14} color="#FFD700" />
+                    <Text style={styles.waterBadgeText}>Goal Achieved!</Text>
+                  </View>
                 )}
               </View>
             </View>
-            <TouchableOpacity 
-              style={[
-                styles.addButton,
-                waterIntake >= waterGoal && styles.addButtonDisabled
-              ]}
-              onPress={() => router.push('/(tabs)/water')}
-              disabled={waterIntake >= waterGoal}
-            >
-              <View style={styles.addButtonInner}>
-                <Ionicons 
-                  name="water" 
-                  size={20} 
-                  color={waterIntake >= waterGoal ? "#ccc" : "#4CAF50"} 
-                />
-                {waterIntake < waterGoal && (
-                  <View style={styles.addIcon}>
-                    <Ionicons name="add" size={16} color="#fff" />
-                  </View>
-                )}
-                {waterIntake >= waterGoal && (
-                  <View style={styles.checkIcon}>
-                    <Ionicons name="checkmark" size={16} color="#fff" />
-                  </View>
-                )}
-              </View>
-            </TouchableOpacity>
           </View>
         </View>
 
@@ -530,131 +652,106 @@ export default function DashboardScreen() {
             </View>
           </View>
           <View style={styles.chartCard}>
-            {selectedChart === 'steps' && (
-              <LineChart
-                data={{
-                  labels: chartData.labels,
-                  datasets: [
-                    {
-                      data: chartData.data,
-                      color: (opacity = 1) => `rgba(76, 175, 80, ${opacity})`,
-                      strokeWidth: 3,
-                    },
-                  ],
-                }}
-                width={screenWidth - 80}
-                height={220}
-                chartConfig={{
-                  ...chartConfig,
-                  color: (opacity = 1) => `rgba(76, 175, 80, ${opacity})`,
-                }}
-                bezier
-                style={styles.chart}
-                withInnerLines={false}
-                withOuterLines={true}
-                withVerticalLabels={true}
-                withHorizontalLabels={true}
-                withDots={true}
-                withShadow={false}
-                onDataPointClick={(data) => {
-                  const dayIndex = data.index;
-                  const dayDate = formatDate(subDays(new Date(), 6 - dayIndex), 'MMM d');
-                  Alert.alert(
-                    'Steps Details',
-                    `${dayDate}: ${Math.round(data.value).toLocaleString()} steps`,
-                    [{ text: 'OK' }]
-                  );
-                }}
-              />
-            )}
-            {selectedChart === 'calories' && (
-              <LineChart
-                data={{
-                  labels: chartData.labels,
-                  datasets: [
-                    {
-                      data: chartData.consumedData,
-                      color: (opacity = 1) => `rgba(255, 107, 53, ${opacity})`,
-                      strokeWidth: 3,
-                    },
-                    {
-                      data: chartData.burnedData,
-                      color: (opacity = 1) => `rgba(76, 175, 80, ${opacity})`,
-                      strokeWidth: 3,
-                    },
-                  ],
-                }}
-                width={screenWidth - 80}
-                height={220}
-                chartConfig={{
-                  ...chartConfig,
-                  color: (opacity = 1) => `rgba(255, 107, 53, ${opacity})`,
-                }}
-                bezier
-                style={styles.chart}
-                withInnerLines={false}
-                withOuterLines={true}
-                withVerticalLabels={true}
-                withHorizontalLabels={true}
-                withDots={true}
-                withShadow={false}
-                onDataPointClick={(data) => {
-                  const dayIndex = data.index;
-                  const dayDate = formatDate(subDays(new Date(), 6 - dayIndex), 'MMM d');
-                  const consumed = chartData.consumedData[dayIndex];
-                  const burned = chartData.burnedData[dayIndex];
-                  Alert.alert(
-                    'Calories Details',
-                    `${dayDate}\nConsumed: ${Math.round(consumed)} kcal\nBurned: ${Math.round(burned)} kcal\nNet: ${Math.round(consumed - burned)} kcal`,
-                    [{ text: 'OK' }]
-                  );
-                }}
-              />
-            )}
-            {selectedChart === 'water' && (
-              <BarChart
-                data={{
-                  labels: chartData.labels,
-                  datasets: [
-                    {
-                      data: chartData.data,
-                    },
-                  ],
-                }}
-                width={screenWidth - 80}
-                height={220}
-                chartConfig={{
-                  ...chartConfig,
-                  color: (opacity = 1) => `rgba(33, 150, 243, ${opacity})`,
-                }}
-                showValuesOnTopOfBars
-                fromZero
-                style={styles.chart}
-                onDataPointClick={(data) => {
-                  const dayIndex = data.index;
-                  const dayDate = formatDate(subDays(new Date(), 6 - dayIndex), 'MMM d');
-                  Alert.alert(
-                    'Water Intake',
-                    `${dayDate}: ${Math.round(data.value)} glasses`,
-                    [{ text: 'OK' }]
-                  );
-                }}
-              />
-            )}
-            <View style={styles.chartLegend}>
-              {selectedChart === 'calories' && (
+            {/* Interactive Skia-based Graph */}
+            <View style={styles.graphContainer}>
+              {LineGraph ? (
                 <>
-                  <View style={styles.legendItem}>
-                    <View style={[styles.legendDot, { backgroundColor: '#FF6B35' }]} />
-                    <Text style={styles.legendText}>Consumed</Text>
-                  </View>
-                  <View style={styles.legendItem}>
-                    <View style={[styles.legendDot, { backgroundColor: '#4CAF50' }]} />
-                    <Text style={styles.legendText}>Burned</Text>
+                  <LineGraph
+                    style={styles.graph}
+                    points={graphPoints}
+                    animated={true}
+                    color={chartConfig.color}
+                    gradientFillColors={chartConfig.gradientFillColors}
+                    enablePanGesture={true}
+                    enableIndicator={true}
+                    indicatorPulsating={true}
+                    onGestureStart={() => setSelectedPoint(null)}
+                    onPointSelected={(point: any) => {
+                      const dayIndex = graphPoints.findIndex(p => 
+                        p.date.getTime() === point.date.getTime()
+                      );
+                      if (dayIndex !== -1) {
+                        const dayDate = format(point.date, 'MMM d');
+                        setSelectedPoint({
+                          date: dayDate,
+                          value: point.value,
+                          index: dayIndex,
+                        });
+                      }
+                    }}
+                    onGestureEnd={() => {
+                      // Keep selected point visible after gesture ends
+                    }}
+                    lineThickness={3}
+                    enableFadeInMask={true}
+                    panGestureDelay={0}
+                    horizontalPadding={16}
+                    verticalPadding={16}
+                  />
+                  
+                  {/* Selected Point Info Display */}
+                  {selectedPoint && (
+                    <View style={styles.selectedPointInfo}>
+                      <View style={styles.selectedPointCard}>
+                        <Text style={styles.selectedPointDate}>{selectedPoint.date}</Text>
+                        <Text style={[styles.selectedPointValue, { color: chartConfig.color }]}>
+                          {chartConfig.formatValue(selectedPoint.value)}{chartConfig.unit}
+                        </Text>
+                      </View>
+                    </View>
+                  )}
+                  
+                  {/* Chart Labels */}
+                  <View style={styles.graphLabels}>
+                    {chartData.labels.map((label, index) => {
+                      const day = subDays(new Date(), 6 - index);
+                      const isSelected = selectedPoint?.index === index;
+                      return (
+                        <View key={index} style={styles.graphLabel}>
+                          <Text style={[
+                            styles.graphLabelText,
+                            isSelected && styles.graphLabelTextSelected
+                          ]}>
+                            {label}
+                          </Text>
+                        </View>
+                      );
+                    })}
                   </View>
                 </>
+              ) : (
+                <View style={styles.graphFallback}>
+                  <Ionicons name="bar-chart-outline" size={64} color="#999" />
+                  <Text style={styles.graphFallbackText}>Graph unavailable</Text>
+                  <Text style={styles.graphFallbackSubtext}>
+                    Chart data: {weeklyData.length} days recorded
+                  </Text>
+                </View>
               )}
             </View>
+            
+            {/* Additional Info for Calories Chart */}
+            {selectedChart === 'calories' && (
+              <View style={styles.chartLegend}>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: '#FF6B35' }]} />
+                  <Text style={styles.legendText}>Consumed</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: '#4CAF50' }]} />
+                  <Text style={styles.legendText}>Burned</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: chartConfig.color }]} />
+                  <Text style={styles.legendText}>Net (Shown)</Text>
+                </View>
+              </View>
+            )}
+            
+            {/* Helper Text */}
+            <Text style={styles.graphHelperText}>
+              Touch and drag to explore data points
+            </Text>
           </View>
         </View>
 
@@ -705,17 +802,35 @@ export default function DashboardScreen() {
           {mealTypeData.length > 0 && (
             <View style={styles.pieChartCard}>
               <Text style={styles.pieChartTitle}>Calories by Meal Type</Text>
-              <PieChart
-                data={mealTypeData}
-                width={screenWidth - 80}
-                height={220}
-                chartConfig={chartConfig}
-                accessor="calories"
-                backgroundColor="transparent"
-                paddingLeft="15"
-                style={styles.chart}
-                absolute
-              />
+              <View style={styles.mealTypeVisualization}>
+                {mealTypeData.map((item, index) => {
+                  const totalCalories = mealTypeData.reduce((sum, m) => sum + m.calories, 0);
+                  const percentage = totalCalories > 0 ? (item.calories / totalCalories) * 100 : 0;
+                  return (
+                    <View key={index} style={styles.mealTypeBar}>
+                      <View style={styles.mealTypeHeader}>
+                        <View style={styles.mealTypeLabelContainer}>
+                          <View style={[styles.mealTypeColorDot, { backgroundColor: item.color }]} />
+                          <Text style={styles.mealTypeLabel}>{item.name}</Text>
+                        </View>
+                        <Text style={styles.mealTypeValue}>{item.calories} kcal</Text>
+                      </View>
+                      <View style={styles.mealTypeBarContainer}>
+                        <View 
+                          style={[
+                            styles.mealTypeBarFill, 
+                            { 
+                              width: `${percentage}%`,
+                              backgroundColor: item.color,
+                            }
+                          ]} 
+                        />
+                      </View>
+                      <Text style={styles.mealTypePercentage}>{percentage.toFixed(1)}%</Text>
+                    </View>
+                  );
+                })}
+              </View>
             </View>
           )}
           <View style={styles.mealsCard}>
@@ -858,7 +973,7 @@ export default function DashboardScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#F5F7FA',
   },
   personalizedHeader: {
     flexDirection: 'row',
@@ -866,22 +981,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 20,
     paddingTop: 20,
-    paddingBottom: 16,
+    paddingBottom: 20,
     backgroundColor: '#fff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 3,
   },
   greetingContainer: {
     flex: 1,
   },
   greetingText: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#333',
-    marginBottom: 4,
+    fontSize: 30,
+    fontWeight: '800',
+    color: '#1A1A1A',
+    marginBottom: 2,
+    letterSpacing: -0.5,
   },
   userNameText: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#333',
+    fontSize: 30,
+    fontWeight: '800',
+    color: '#1A1A1A',
+    letterSpacing: -0.5,
   },
   profileContainer: {
     marginLeft: 16,
@@ -907,9 +1029,14 @@ const styles = StyleSheet.create({
   },
   datePickerContainer: {
     backgroundColor: '#fff',
-    paddingVertical: 16,
+    paddingVertical: 20,
     borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+    borderBottomColor: '#E8E8E8',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 4,
+    elevation: 2,
   },
   datePickerScroll: {
     paddingHorizontal: 20,
@@ -983,9 +1110,15 @@ const styles = StyleSheet.create({
   },
   section: {
     paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingVertical: 20,
     backgroundColor: '#fff',
     marginTop: 12,
+    borderRadius: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
   },
   sectionHeader: {
     flexDirection: 'row',
@@ -994,9 +1127,10 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   sectionTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#333',
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#1A1A1A',
+    letterSpacing: -0.5,
     marginBottom: 12,
   },
   seeAllText: {
@@ -1006,61 +1140,110 @@ const styles = StyleSheet.create({
   },
   mainMetricContainer: {
     alignItems: 'center',
-    paddingVertical: 32,
+    paddingVertical: 24,
+    paddingHorizontal: 20,
     backgroundColor: '#fff',
+    marginTop: 12,
+  },
+  fastingCard: {
+    width: '100%',
+    alignItems: 'center',
+    padding: 24,
+    borderRadius: 24,
+    backgroundColor: '#fff',
+    shadowColor: '#9B59B6',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 5,
+  },
+  fastingIconContainer: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    overflow: 'hidden',
+  },
+  fastingIconGradient: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fastingTextContainer: {
+    marginTop: 20,
+    alignItems: 'center',
   },
   mainMetricValue: {
-    fontSize: 36,
-    fontWeight: 'bold',
+    fontSize: 40,
+    fontWeight: '800',
     color: '#333',
-    marginTop: 16,
+    letterSpacing: -1,
   },
   mainMetricLabel: {
     fontSize: 16,
     color: '#666',
-    marginTop: 4,
+    marginTop: 6,
+    fontWeight: '500',
   },
   activityMetrics: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
+    justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingVertical: 24,
+    paddingVertical: 16,
     backgroundColor: '#fff',
+    marginTop: 12,
+    gap: 12,
   },
-  activityCircle: {
+  activityCard: {
+    flex: 1,
+    borderRadius: 20,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  activityCardGradient: {
+    paddingVertical: 20,
+    paddingHorizontal: 12,
     alignItems: 'center',
-    position: 'relative',
+    borderRadius: 20,
   },
-  activityDot: {
-    position: 'absolute',
-    bottom: -4,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#4CAF50',
-    zIndex: 1,
+  activityIconWrapper: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
   },
   activityValue: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#333',
-    marginTop: 8,
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#4CAF50',
+    marginTop: 4,
+    letterSpacing: -0.5,
   },
   activityLabel: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#666',
-    marginTop: 4,
+    marginTop: 6,
+    fontWeight: '600',
+    textAlign: 'center',
   },
   // Calories Section
   caloriesCard: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 20,
+    backgroundColor: '#FAFAFA',
+    borderRadius: 20,
+    padding: 24,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+    marginTop: 8,
   },
   caloriesRow: {
     flexDirection: 'row',
@@ -1109,14 +1292,15 @@ const styles = StyleSheet.create({
   },
   // Meals Section
   mealsCard: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 16,
+    backgroundColor: '#FAFAFA',
+    borderRadius: 20,
+    padding: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+    marginTop: 8,
   },
   mealsRow: {
     flexDirection: 'row',
@@ -1155,14 +1339,15 @@ const styles = StyleSheet.create({
   },
   // Workouts Section
   workoutsCard: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 16,
+    backgroundColor: '#FAFAFA',
+    borderRadius: 20,
+    padding: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+    marginTop: 8,
   },
   workoutStats: {
     flexDirection: 'row',
@@ -1210,16 +1395,17 @@ const styles = StyleSheet.create({
   },
   // Heart Rate Section
   heartRateCard: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 16,
+    backgroundColor: '#FAFAFA',
+    borderRadius: 20,
+    padding: 24,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
     flexDirection: 'row',
     justifyContent: 'space-around',
+    marginTop: 8,
   },
   heartRateItem: {
     flexDirection: 'row',
@@ -1243,11 +1429,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#fff',
-    padding: 16,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E8E8E8',
+    backgroundColor: '#FAFAFA',
+    padding: 20,
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+    marginTop: 8,
   },
   recoveryContent: {
     flex: 1,
@@ -1269,88 +1459,99 @@ const styles = StyleSheet.create({
   },
   waterSection: {
     paddingHorizontal: 20,
-    paddingVertical: 24,
+    paddingVertical: 16,
     backgroundColor: '#fff',
     marginTop: 12,
   },
   waterCard: {
+    backgroundColor: '#fff',
+    padding: 20,
+    borderRadius: 24,
+    shadowColor: '#2196F3',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 5,
+  },
+  waterHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  waterTitleContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#fff',
-    padding: 16,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E8E8E8',
+    gap: 10,
   },
-  waterContent: {
-    flex: 1,
+  waterAddButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    overflow: 'hidden',
+  },
+  waterButtonGradient: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  waterButtonComplete: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#4CAF50',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  waterAddButtonDisabled: {
+    opacity: 0.6,
   },
   waterProgressContainer: {
-    marginBottom: 8,
+    gap: 12,
   },
   waterProgressBar: {
-    height: 20,
-    backgroundColor: '#E8E8E8',
+    height: 16,
+    backgroundColor: '#E3F2FD',
     borderRadius: 10,
     overflow: 'hidden',
-    marginBottom: 8,
   },
   waterProgressFill: {
     height: '100%',
-    backgroundColor: '#4CAF50',
     borderRadius: 10,
+  },
+  waterStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   waterText: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#333',
   },
-  waterGoalAchieved: {
-    fontSize: 12,
-    color: '#4CAF50',
-    fontWeight: '600',
-    marginTop: 4,
-    textAlign: 'center',
+  waterAmount: {
+    color: '#2196F3',
+    fontSize: 20,
+    fontWeight: '800',
   },
-  addButtonDisabled: {
-    opacity: 0.5,
+  waterDivider: {
+    color: '#999',
   },
-  checkIcon: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#4CAF50',
-    justifyContent: 'center',
+  waterGoal: {
+    color: '#666',
+  },
+  waterBadge: {
+    flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#fff',
+    backgroundColor: '#FFF9C4',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    gap: 4,
   },
-  addButton: {
-    marginLeft: 16,
-  },
-  addButtonInner: {
-    position: 'relative',
-    width: 48,
-    height: 48,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  addIcon: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#4CAF50',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#fff',
+  waterBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#F57F17',
   },
   // Chart Styles
   chartSelector: {
@@ -1358,13 +1559,18 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   chartTab: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    backgroundColor: '#f0f0f0',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: '#F5F5F5',
   },
   chartTabActive: {
     backgroundColor: '#4CAF50',
+    shadowColor: '#4CAF50',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   chartTabText: {
     fontSize: 12,
@@ -1375,15 +1581,16 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   chartCard: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 16,
+    backgroundColor: '#FAFAFA',
+    borderRadius: 20,
+    padding: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
     alignItems: 'center',
+    marginTop: 8,
   },
   chart: {
     marginVertical: 8,
@@ -1409,23 +1616,192 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#666',
   },
-  pieChartCard: {
-    backgroundColor: '#fff',
+  // Interactive Graph Styles (Skia-based)
+  graphContainer: {
+    width: screenWidth - 80,
+    height: 250,
+    marginVertical: 8,
+    position: 'relative',
+  },
+  graph: {
+    flex: 1,
     borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
+  },
+  selectedPointInfo: {
+    position: 'absolute',
+    top: 16,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  selectedPointCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 5,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 0, 0, 0.05)',
+  },
+  selectedPointDate: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#666',
+    marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  selectedPointValue: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#333',
+  },
+  graphLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 12,
+    paddingHorizontal: 4,
+  },
+  graphLabel: {
+    flex: 1,
     alignItems: 'center',
   },
+  graphLabelText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#999',
+    textTransform: 'uppercase',
+  },
+  graphLabelTextSelected: {
+    color: '#333',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  graphHelperText: {
+    fontSize: 11,
+    color: '#999',
+    textAlign: 'center',
+    marginTop: 8,
+    fontStyle: 'italic',
+  },
+  pieChartCard: {
+    backgroundColor: '#FAFAFA',
+    borderRadius: 20,
+    padding: 20,
+    marginBottom: 16,
+    marginTop: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+  },
   pieChartTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#333',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  mealTypeVisualization: {
+    gap: 16,
+  },
+  mealTypeBar: {
+    marginBottom: 4,
+  },
+  mealTypeHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  mealTypeLabelContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  mealTypeColorDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  mealTypeLabel: {
     fontSize: 14,
     fontWeight: '600',
     color: '#333',
-    marginBottom: 8,
+  },
+  mealTypeValue: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#666',
+  },
+  mealTypeBarContainer: {
+    height: 12,
+    backgroundColor: '#E8E8E8',
+    borderRadius: 6,
+    overflow: 'hidden',
+    marginBottom: 4,
+  },
+  mealTypeBarFill: {
+    height: '100%',
+    borderRadius: 6,
+  },
+  mealTypePercentage: {
+    fontSize: 11,
+    color: '#999',
+    marginTop: 2,
+  },
+  graphFallback: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#f5f5f5',
+    borderRadius: 16,
+    padding: 40,
+  },
+  graphFallbackText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 16,
+    textAlign: 'center',
+  },
+  graphFallbackSubtext: {
+    fontSize: 14,
+    color: '#999',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  addButton: {
+    marginLeft: 12,
+  },
+  addButtonInner: {
+    position: 'relative',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#E8F5E9',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  addIcon: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#4CAF50',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#fff',
   },
 });
 

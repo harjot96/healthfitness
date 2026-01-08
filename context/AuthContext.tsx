@@ -3,6 +3,7 @@ import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { auth } from '../services/firebase/config';
 import { signIn, signUp, logout, getUserProfile, saveUserProfile, signInWithGoogle, signInWithApple } from '../services/firebase/auth';
 import { User, UserProfile } from '../types';
+import { watchConnectivityService } from '../services/watch/WatchConnectivityService';
 
 interface AuthContextType {
   user: User | null;
@@ -32,6 +33,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
         setUser(userData);
         
+        // Sync authentication status to Apple Watch
+        watchConnectivityService.sendUserAuthStatus(
+          firebaseUser.uid,
+          firebaseUser.email || ''
+        ).catch(error => {
+          console.debug('Watch not available for auth sync:', error);
+        });
+        
         // Load user profile
         try {
           const profile = await getUserProfile(firebaseUser.uid);
@@ -42,12 +51,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } else {
         setUser(null);
         setUserProfile(null);
+        
+        // Notify watch that user signed out
+        watchConnectivityService.sendUserSignedOut().catch(error => {
+          console.debug('Watch not available for sign out sync:', error);
+        });
       }
       setLoading(false);
     });
 
     return unsubscribe;
   }, []);
+
+  // Listen for auth status requests from watch
+  useEffect(() => {
+    const unsubscribe = watchConnectivityService.onRequestAuthStatus(() => {
+      // Watch is requesting auth status, send current user if available
+      if (user) {
+        watchConnectivityService.sendUserAuthStatus(
+          user.uid,
+          user.email
+        ).catch(error => {
+          console.debug('Watch not available for auth status response:', error);
+        });
+      } else {
+        watchConnectivityService.sendUserSignedOut().catch(error => {
+          console.debug('Watch not available for sign out response:', error);
+        });
+      }
+    });
+
+    return unsubscribe;
+  }, [user]);
 
   const handleSignIn = async (email: string, password: string) => {
     await signIn(email, password);
@@ -60,6 +95,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const handleSignOut = async () => {
     await logout();
     setUserProfile(null);
+    
+    // Notify watch that user signed out
+    watchConnectivityService.sendUserSignedOut().catch(error => {
+      console.debug('Watch not available for sign out sync:', error);
+    });
   };
 
   const handleUpdateProfile = async (profile: UserProfile) => {

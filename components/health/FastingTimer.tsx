@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, ScrollView, Dimensions, TextInput, Alert } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, ScrollView, Dimensions, TextInput, Alert, Platform } from 'react-native';
+import Constants from 'expo-constants';
 import { useHealth } from '../../context/HealthContext';
 import { useAuth } from '../../context/AuthContext';
 import { Button } from '../common/Button';
 import { CircularProgress } from '../common/CircularProgress';
-import { LineChart, BarChart } from 'react-native-chart-kit';
 import { format, differenceInHours, differenceInMinutes, startOfWeek, endOfWeek, eachDayOfInterval, getDate, subDays } from 'date-fns';
 import { getWeeklyFastingData, getMonthlyFastingData } from '../../services/storage/firestore';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,6 +15,7 @@ const screenWidth = Dimensions.get('window').width;
 export const FastingTimer: React.FC = () => {
   const { todayData, startFasting, stopFasting } = useHealth();
   const { user } = useAuth();
+  const [LineGraphComponent, setLineGraphComponent] = useState<any>(null);
   const [selectedType, setSelectedType] = useState('16:8');
   const [elapsedTime, setElapsedTime] = useState(0);
   const [weeklyData, setWeeklyData] = useState<{ date: string; duration: number; type: string }[]>([]);
@@ -26,6 +27,9 @@ export const FastingTimer: React.FC = () => {
   const [showCustomInputs, setShowCustomInputs] = useState(false);
   const [customEatingHours, setCustomEatingHours] = useState('');
   const [customFastingHours, setCustomFastingHours] = useState('');
+  const [selectedPoint, setSelectedPoint] = useState<{ date: string; value: number } | null>(null);
+  const isExpoGo = Constants.appOwnership === 'expo';
+  const canUseGraph = Platform.OS !== 'web' && !isExpoGo;
 
   const fastingTypes = [
     { label: '16:8', value: '16:8', hours: 16 },
@@ -61,6 +65,31 @@ export const FastingTimer: React.FC = () => {
       if (interval) clearInterval(interval);
     };
   }, [isFasting, activeSession]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!canUseGraph) {
+      setLineGraphComponent(null);
+      return undefined;
+    }
+
+    (async () => {
+      try {
+        const Graph = await import('react-native-graph');
+        if (!cancelled) setLineGraphComponent(() => Graph.LineGraph);
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('react-native-graph is not available. Graph features will be disabled.');
+          setLineGraphComponent(null);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canUseGraph]);
 
   useEffect(() => {
     if (user) {
@@ -179,27 +208,27 @@ export const FastingTimer: React.FC = () => {
     return Math.min((elapsedTime / targetMinutes) * 100, 100);
   };
 
-  const prepareWeeklyChartData = () => {
+  // Prepare weekly graph points for Skia-based LineGraph
+  const prepareWeeklyGraphPoints = (): any[] => {
     const weekStart = startOfWeek(new Date(), { weekStartsOn: 1 });
     const weekEnd = endOfWeek(new Date(), { weekStartsOn: 1 });
     const days = eachDayOfInterval({ start: weekStart, end: weekEnd });
     
     const dataMap = new Map(weeklyData.map(d => [d.date, d.duration]));
     
-    const labels = days.map(day => {
-      const dayName = format(day, 'EEE');
-      return dayName.substring(0, 1);
-    });
-    
-    const data = days.map(day => {
+    return days.map((day) => {
       const dateStr = format(day, 'yyyy-MM-dd');
-      return dataMap.get(dateStr) || 0;
+      const hours = dataMap.get(dateStr) || 0;
+      // Convert hours to minutes for better granularity
+      return {
+        date: day,
+        value: hours * 60,
+      };
     });
-
-    return { labels, data };
   };
 
-  const prepareMonthlyChartData = () => {
+  // Prepare monthly graph points for Skia-based LineGraph
+  const prepareMonthlyGraphPoints = (): any[] => {
     const year = selectedMonth.getFullYear();
     const month = selectedMonth.getMonth();
     const start = new Date(year, month, 1);
@@ -208,14 +237,27 @@ export const FastingTimer: React.FC = () => {
     
     const dataMap = new Map(monthlyData.map(d => [d.date, d.duration]));
     
-    // Show first 7 days for readability
-    const labels = days.slice(0, 7).map(day => getDate(day).toString());
-    const data = days.slice(0, 7).map(day => {
+    return days.map((day) => {
       const dateStr = format(day, 'yyyy-MM-dd');
-      return dataMap.get(dateStr) || 0;
+      const hours = dataMap.get(dateStr) || 0;
+      // Convert hours to minutes for better granularity
+      return {
+        date: day,
+        value: hours * 60,
+      };
     });
+  };
 
-    return { labels, data };
+  const weeklyGraphPoints = prepareWeeklyGraphPoints();
+  const monthlyGraphPoints = prepareMonthlyGraphPoints();
+
+  // Format value for display (minutes to hours)
+  const formatValue = (minutes: number) => {
+    const hours = Math.floor(minutes / 60);
+    const mins = Math.round(minutes % 60);
+    if (hours === 0) return `${mins}m`;
+    if (mins === 0) return `${hours}h`;
+    return `${hours}h ${mins}m`;
   };
 
   const getWeeklyStats = () => {
@@ -246,26 +288,9 @@ export const FastingTimer: React.FC = () => {
     setSelectedMonth(newMonth);
   };
 
-  const weeklyChartData = prepareWeeklyChartData();
-  const monthlyChartData = prepareMonthlyChartData();
   const weeklyStats = getWeeklyStats();
   const monthlyStats = getMonthlyStats();
   const progress = getProgress();
-
-  const chartConfig = {
-    backgroundColor: '#fff',
-    backgroundGradientFrom: '#fff',
-    backgroundGradientTo: '#fff',
-    decimalPlaces: 1,
-    color: (opacity = 1) => `rgba(76, 175, 80, ${opacity})`,
-    labelColor: (opacity = 1) => `rgba(0, 0, 0, ${opacity})`,
-    style: {
-      borderRadius: 16,
-    },
-    propsForBackgroundLines: {
-      strokeDasharray: '',
-    },
-  };
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
@@ -551,34 +576,73 @@ export const FastingTimer: React.FC = () => {
         {showChart === 'weekly' ? (
           <View style={styles.chartContainer}>
             <Text style={styles.chartTitle}>Weekly Progress</Text>
-            <LineChart
-              data={{
-                labels: weeklyChartData.labels,
-                datasets: [
-                  {
-                    data: weeklyChartData.data.map(h => h * 60), // Convert hours to minutes for better display
-                    color: (opacity = 1) => `rgba(155, 89, 182, ${opacity})`,
-                    strokeWidth: 3,
-                  },
-                ],
-              }}
-              width={screenWidth - 40}
-              height={220}
-              chartConfig={{
-                ...chartConfig,
-                color: (opacity = 1) => `rgba(155, 89, 182, ${opacity})`,
-                formatYLabel: (value) => {
-                  const minutes = Math.round(parseFloat(value));
-                  if (minutes < 60) return `${minutes}m`;
-                  const hours = Math.floor(minutes / 60);
-                  const mins = minutes % 60;
-                  return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
-                },
-              }}
-              bezier
-              style={styles.chart}
-              yAxisSuffix=""
-            />
+            <View style={styles.graphWrapper}>
+              {LineGraphComponent ? (
+                <>
+                  <LineGraphComponent
+                    style={styles.graph}
+                    points={weeklyGraphPoints}
+                    animated={true}
+                    color="#9B59B6"
+                    gradientFillColors={['#9B59B6', '#8E44AD']}
+                    enablePanGesture={true}
+                    enableIndicator={true}
+                    indicatorPulsating={true}
+                    onGestureStart={() => setSelectedPoint(null)}
+                    onPointSelected={(point) => {
+                      const dayDate = format(point.date, 'MMM d');
+                      setSelectedPoint({
+                        date: dayDate,
+                        value: point.value,
+                      });
+                    }}
+                    onGestureEnd={() => {
+                      // Keep selected point visible
+                    }}
+                    lineThickness={3}
+                    enableFadeInMask={true}
+                    panGestureDelay={0}
+                    horizontalPadding={16}
+                    verticalPadding={16}
+                  />
+                  
+                  {/* Selected Point Info */}
+                  {selectedPoint && (
+                    <View style={styles.selectedPointInfo}>
+                      <View style={styles.selectedPointCard}>
+                        <Text style={styles.selectedPointDate}>{selectedPoint.date}</Text>
+                        <Text style={styles.selectedPointValue}>
+                          {formatValue(selectedPoint.value)}
+                        </Text>
+                      </View>
+                    </View>
+                  )}
+                </>
+              ) : (
+                <View style={styles.graphFallback}>
+                  <Ionicons name="bar-chart-outline" size={64} color="#999" />
+                  <Text style={styles.graphFallbackText}>Graph unavailable</Text>
+                  <Text style={styles.graphFallbackSubtext}>
+                    Weekly data: {weeklyData.length} sessions recorded
+                  </Text>
+                  {weeklyData.length > 0 && (
+                    <View style={styles.dataList}>
+                      {weeklyData.slice(0, 7).map((item, index) => (
+                        <View key={index} style={styles.dataItem}>
+                          <Text style={styles.dataDate}>{format(new Date(item.date), 'MMM d')}</Text>
+                          <Text style={styles.dataValue}>{formatValue(item.duration * 60)}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                </View>
+              )}
+            </View>
+            {LineGraphComponent && (
+              <Text style={styles.graphHelperText}>
+                Touch and drag to explore weekly fasting data
+              </Text>
+            )}
           </View>
         ) : (
           <View style={styles.chartContainer}>
@@ -593,32 +657,73 @@ export const FastingTimer: React.FC = () => {
                 <Ionicons name="chevron-forward" size={24} color="#333" />
               </TouchableOpacity>
             </View>
-            <BarChart
-              data={{
-                labels: monthlyChartData.labels,
-                datasets: [
-                  {
-                    data: monthlyChartData.data.map(h => h * 60), // Convert hours to minutes
-                  },
-                ],
-              }}
-              width={screenWidth - 40}
-              height={220}
-              chartConfig={{
-                ...chartConfig,
-                color: (opacity = 1) => `rgba(155, 89, 182, ${opacity})`,
-                formatTopBarValue: (value) => {
-                  const minutes = Math.round(parseFloat(value));
-                  if (minutes < 60) return `${minutes}m`;
-                  const hours = Math.floor(minutes / 60);
-                  const mins = minutes % 60;
-                  return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
-                },
-              }}
-              showValuesOnTopOfBars
-              fromZero
-              style={styles.chart}
-            />
+            <View style={styles.graphWrapper}>
+              {LineGraphComponent ? (
+                <>
+                  <LineGraphComponent
+                    style={styles.graph}
+                    points={monthlyGraphPoints}
+                    animated={true}
+                    color="#9B59B6"
+                    gradientFillColors={['#9B59B6', '#8E44AD']}
+                    enablePanGesture={true}
+                    enableIndicator={true}
+                    indicatorPulsating={true}
+                    onGestureStart={() => setSelectedPoint(null)}
+                    onPointSelected={(point) => {
+                      const dayDate = format(point.date, 'MMM d');
+                      setSelectedPoint({
+                        date: dayDate,
+                        value: point.value,
+                      });
+                    }}
+                    onGestureEnd={() => {
+                      // Keep selected point visible
+                    }}
+                    lineThickness={3}
+                    enableFadeInMask={true}
+                    panGestureDelay={0}
+                    horizontalPadding={16}
+                    verticalPadding={16}
+                  />
+                  
+                  {/* Selected Point Info */}
+                  {selectedPoint && (
+                    <View style={styles.selectedPointInfo}>
+                      <View style={styles.selectedPointCard}>
+                        <Text style={styles.selectedPointDate}>{selectedPoint.date}</Text>
+                        <Text style={styles.selectedPointValue}>
+                          {formatValue(selectedPoint.value)}
+                        </Text>
+                      </View>
+                    </View>
+                  )}
+                </>
+              ) : (
+                <View style={styles.graphFallback}>
+                  <Ionicons name="bar-chart-outline" size={64} color="#999" />
+                  <Text style={styles.graphFallbackText}>Graph unavailable</Text>
+                  <Text style={styles.graphFallbackSubtext}>
+                    Monthly data: {monthlyData.length} sessions recorded
+                  </Text>
+                  {monthlyData.length > 0 && (
+                    <ScrollView style={styles.dataList}>
+                      {monthlyData.slice(0, 15).map((item, index) => (
+                        <View key={index} style={styles.dataItem}>
+                          <Text style={styles.dataDate}>{format(new Date(item.date), 'MMM d')}</Text>
+                          <Text style={styles.dataValue}>{formatValue(item.duration * 60)}</Text>
+                        </View>
+                      ))}
+                    </ScrollView>
+                  )}
+                </View>
+              )}
+            </View>
+            {LineGraphComponent && (
+              <Text style={styles.graphHelperText}>
+                Touch and drag to explore monthly fasting data
+              </Text>
+            )}
             <View style={styles.monthlyStats}>
               <View style={styles.monthlyStat}>
                 <Text style={styles.monthlyStatValue}>{monthlyStats.completedSessions}</Text>
@@ -911,9 +1016,102 @@ const styles = StyleSheet.create({
     width: '100%',
     marginBottom: 16,
   },
-  chart: {
+  graphWrapper: {
+    width: screenWidth - 40,
+    height: 250,
+    position: 'relative',
     marginVertical: 8,
+  },
+  graph: {
+    flex: 1,
     borderRadius: 16,
+  },
+  selectedPointInfo: {
+    position: 'absolute',
+    top: 16,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  selectedPointCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 5,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(155, 89, 182, 0.2)',
+  },
+  selectedPointDate: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#666',
+    marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  selectedPointValue: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#9B59B6',
+  },
+  graphHelperText: {
+    fontSize: 11,
+    color: '#999',
+    textAlign: 'center',
+    marginTop: 8,
+    fontStyle: 'italic',
+  },
+  graphFallback: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#f5f5f5',
+    borderRadius: 16,
+    padding: 40,
+  },
+  graphFallbackText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 16,
+    textAlign: 'center',
+  },
+  graphFallbackSubtext: {
+    fontSize: 14,
+    color: '#999',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  dataList: {
+    marginTop: 20,
+    width: '100%',
+  },
+  dataItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: '#fff',
+    marginBottom: 8,
+    borderRadius: 8,
+  },
+  dataDate: {
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '500',
+  },
+  dataValue: {
+    fontSize: 16,
+    color: '#9B59B6',
+    fontWeight: '600',
   },
   monthlyStats: {
     flexDirection: 'row',
@@ -1230,4 +1428,3 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
 });
-

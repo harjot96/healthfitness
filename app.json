@@ -18,7 +18,10 @@
       "bundleIdentifier": "com.healthfitness.app",
       "infoPlist": {
         "NSHealthShareUsageDescription": "This app needs access to your health data to track your steps, calories, and activity.",
-        "NSHealthUpdateUsageDescription": "This app needs to update your health data to track your fitness progress."
+        "NSHealthUpdateUsageDescription": "This app needs to update your health data to track your fitness progress.",
+        "NSLocationWhenInUseUsageDescription": "This app needs access to your location to track your running and walking routes.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "This app needs access to your location to track your running and walking routes even when the app is in the background.",
+        "ITSAppUsesNonExemptEncryption": false
       },
       "usesAppleSignIn": true
     },
@@ -34,7 +37,12 @@
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_HEALTH",
         "RECEIVE_BOOT_COMPLETED",
-        "VIBRATE"
+        "VIBRATE",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
       ],
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
@@ -55,7 +63,22 @@
           "icon": "./assets/icon.png",
           "color": "#4CAF50"
         }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "This app needs access to your location to track your running and walking routes."
+        }
       ]
-    ]
+    ],
+    "extra": {
+      "router": {
+        "root": "./app"
+      },
+      "eas": {
+        "projectId": "72b13bcf-08f4-459f-982c-2614e1adac20"
+      }
+    },
+    "owner": "hsd96"
   }
 }

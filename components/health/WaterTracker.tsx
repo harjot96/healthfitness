@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, ScrollView, Alert } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, ScrollView, Alert, Dimensions, Platform } from 'react-native';
+import Constants from 'expo-constants';
 import { Ionicons } from '@expo/vector-icons';
-import { BarChart } from 'react-native-chart-kit';
-import { Dimensions } from 'react-native';
 import { useHealth } from '../../context/HealthContext';
 import { useAuth } from '../../context/AuthContext';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDate } from 'date-fns';
@@ -13,8 +12,12 @@ const screenWidth = Dimensions.get('window').width;
 export const WaterTracker: React.FC = () => {
   const { todayData, addWaterEntry } = useHealth();
   const { user } = useAuth();
+  const [LineGraphComponent, setLineGraphComponent] = useState<any>(null);
   const [monthlyData, setMonthlyData] = useState<{ date: string; waterIntake: number }[]>([]);
   const [selectedMonth, setSelectedMonth] = useState(new Date());
+  const [selectedPoint, setSelectedPoint] = useState<{ date: string; value: number } | null>(null);
+  const isExpoGo = Constants.appOwnership === 'expo';
+  const canUseGraph = Platform.OS !== 'web' && !isExpoGo;
 
   const currentWater = todayData?.waterIntake || 0;
   const goal = 8; // 8 glasses per day (64oz)
@@ -23,6 +26,31 @@ export const WaterTracker: React.FC = () => {
   useEffect(() => {
     loadMonthlyData();
   }, [selectedMonth, user]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!canUseGraph) {
+      setLineGraphComponent(null);
+      return undefined;
+    }
+
+    (async () => {
+      try {
+        const Graph = await import('react-native-graph');
+        if (!cancelled) setLineGraphComponent(() => Graph.LineGraph);
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('react-native-graph is not available. Graph features will be disabled.');
+          setLineGraphComponent(null);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canUseGraph]);
 
   const loadMonthlyData = async () => {
     if (!user) return;
@@ -71,25 +99,25 @@ export const WaterTracker: React.FC = () => {
     }
   };
 
-  const prepareChartData = () => {
-    const year = selectedMonth.getFullYear();
-    const month = selectedMonth.getMonth();
+  // Prepare graph points for Skia-based LineGraph
+  const prepareGraphPoints = (): any[] => {
     const start = startOfMonth(selectedMonth);
     const end = endOfMonth(selectedMonth);
     const days = eachDayOfInterval({ start, end });
     
     const dataMap = new Map(monthlyData.map(d => [d.date, d.waterIntake]));
     
-    const labels = days.map(day => getDate(day).toString());
-    const data = days.map(day => {
+    return days.map((day) => {
       const dateStr = format(day, 'yyyy-MM-dd');
-      return dataMap.get(dateStr) || 0;
+      const value = dataMap.get(dateStr) || 0;
+      return {
+        date: day,
+        value: value,
+      };
     });
-
-    return { labels, data };
   };
 
-  const chartData = prepareChartData();
+  const graphPoints = prepareGraphPoints();
 
   const chartConfig = {
     backgroundColor: '#fff',
@@ -218,24 +246,75 @@ export const WaterTracker: React.FC = () => {
         </View>
 
         <View style={styles.chartContainer}>
-          <BarChart
-            data={{
-              labels: chartData.labels.slice(0, 7), // Show first 7 days for readability
-              datasets: [
-                {
-                  data: chartData.data.slice(0, 7),
-                },
-              ],
-            }}
-            width={screenWidth - 40}
-            height={220}
-            chartConfig={chartConfig}
-            yAxisLabel=""
-            yAxisSuffix=""
-            showValuesOnTopOfBars
-            fromZero
-            style={styles.chart}
-          />
+          <View style={styles.graphWrapper}>
+            {LineGraphComponent ? (
+              <>
+                <LineGraphComponent
+                  style={styles.graph}
+                  points={graphPoints}
+                  animated={true}
+                  color="#2196F3"
+                  gradientFillColors={['#2196F3', '#42A5F5']}
+                  enablePanGesture={true}
+                  enableIndicator={true}
+                  indicatorPulsating={true}
+                  onGestureStart={() => setSelectedPoint(null)}
+                  onPointSelected={(point) => {
+                    const dayDate = format(point.date, 'MMM d');
+                    setSelectedPoint({
+                      date: dayDate,
+                      value: point.value,
+                    });
+                  }}
+                  onGestureEnd={() => {
+                    // Keep selected point visible
+                  }}
+                  lineThickness={3}
+                  enableFadeInMask={true}
+                  panGestureDelay={0}
+                  horizontalPadding={16}
+                  verticalPadding={16}
+                />
+                
+                {/* Selected Point Info */}
+                {selectedPoint && (
+                  <View style={styles.selectedPointInfo}>
+                    <View style={styles.selectedPointCard}>
+                      <Text style={styles.selectedPointDate}>{selectedPoint.date}</Text>
+                      <Text style={styles.selectedPointValue}>
+                        {Math.round(selectedPoint.value)} glasses
+                      </Text>
+                    </View>
+                  </View>
+                )}
+              </>
+            ) : (
+              <View style={styles.graphFallback}>
+                <Ionicons name="water-outline" size={64} color="#999" />
+                <Text style={styles.graphFallbackText}>Graph unavailable</Text>
+                <Text style={styles.graphFallbackSubtext}>
+                  Monthly data: {monthlyData.length} days recorded
+                </Text>
+                {monthlyData.length > 0 && (
+                  <ScrollView style={styles.dataList}>
+                    {monthlyData.slice(0, 15).map((item, index) => (
+                      <View key={index} style={styles.dataItem}>
+                        <Text style={styles.dataDate}>{format(new Date(item.date), 'MMM d')}</Text>
+                        <Text style={styles.dataValue}>{Math.round(item.waterIntake)} glasses</Text>
+                      </View>
+                    ))}
+                  </ScrollView>
+                )}
+              </View>
+            )}
+          </View>
+          
+          {/* Helper Text */}
+          {LineGraphComponent && (
+            <Text style={styles.graphHelperText}>
+              Touch and drag to explore daily water intake
+            </Text>
+          )}
         </View>
 
         {/* Full Month Summary */}
@@ -368,9 +447,103 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 20,
   },
-  chart: {
+  graphWrapper: {
+    width: screenWidth - 40,
+    height: 250,
+    position: 'relative',
     marginVertical: 8,
+  },
+  graph: {
+    flex: 1,
     borderRadius: 16,
+  },
+  selectedPointInfo: {
+    position: 'absolute',
+    top: 16,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  selectedPointCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 5,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(33, 150, 243, 0.2)',
+  },
+  selectedPointDate: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#666',
+    marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  selectedPointValue: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#2196F3',
+  },
+  graphHelperText: {
+    fontSize: 11,
+    color: '#999',
+    textAlign: 'center',
+    marginTop: 8,
+    fontStyle: 'italic',
+  },
+  graphFallback: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#f5f5f5',
+    borderRadius: 16,
+    padding: 40,
+  },
+  graphFallbackText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 16,
+    textAlign: 'center',
+  },
+  graphFallbackSubtext: {
+    fontSize: 14,
+    color: '#999',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  dataList: {
+    marginTop: 20,
+    width: '100%',
+    maxHeight: 200,
+  },
+  dataItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: '#fff',
+    marginBottom: 8,
+    borderRadius: 8,
+  },
+  dataDate: {
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '500',
+  },
+  dataValue: {
+    fontSize: 16,
+    color: '#2196F3',
+    fontWeight: '600',
   },
   summaryContainer: {
     marginTop: 8,
@@ -399,5 +572,3 @@ const styles = StyleSheet.create({
     color: '#666',
   },
 });
-
-

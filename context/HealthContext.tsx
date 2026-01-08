@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { Platform } from 'react-native';
 import { useAuth } from './AuthContext';
 import { DailyHealthData, Meal, FastingSession, HealthMetrics, WaterEntry, Workout } from '../types';
@@ -7,6 +7,8 @@ import { waterTrackingService } from '../services/health/waterTracking';
 import { fastingNotificationService } from '../services/health/fastingNotifications';
 import { stepCounterService } from '../services/health/stepCounter';
 import { appleHealthKitService } from '../services/health/appleHealthKit';
+import { watchConnectivityService } from '../services/watch/WatchConnectivityService';
+import { watchSyncHandler } from '../services/watch/WatchSyncHandler';
 import { format } from 'date-fns';
 
 interface HealthContextType {
@@ -72,13 +74,27 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       loadTodayData();
       initializeHealthTracking();
       initializeWaterTracking();
+      
+      return () => {
+        stepCounterService.stopTracking();
+        watchSyncHandler.cleanup();
+      };
     } else {
       console.log('[HealthContext] No user authenticated');
     }
-    return () => {
-      stepCounterService.stopTracking();
-    };
   }, [user]);
+
+  // Update watch sync handler with refresh callback when refreshHealthData is available
+  // The watch sync handler will work regardless of connection status
+  // WatchConnectionContext manages the connection state separately
+  useEffect(() => {
+    if (user) {
+      // Initialize watch sync handler with refresh callback
+      // This ensures mobile app updates when watch syncs workouts
+      // The handler will receive workout data when watch is connected
+      watchSyncHandler.initialize(user.uid, refreshHealthData);
+    }
+  }, [user, refreshHealthData]);
 
   useEffect(() => {
     if (!user) return;
@@ -223,6 +239,25 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  // Sync daily stats to Apple Watch
+  const syncStatsToWatch = async () => {
+    if (!todayData || Platform.OS !== 'ios') return;
+    
+    try {
+      const isReachable = await watchConnectivityService.isWatchReachable();
+      if (isReachable) {
+        await watchConnectivityService.sendDailyStats({
+          steps: todayData.steps,
+          calories: Math.round(todayData.caloriesConsumed),
+          water: todayData.waterIntake || 0,
+        });
+      }
+    } catch (error) {
+      // Silently fail - watch might not be available
+      console.debug('Watch not available:', error);
+    }
+  };
+
   const loadTodayData = async () => {
     if (!user) return;
     
@@ -239,6 +274,8 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           heartRate: data.heartRate || 0,
           restingHeartRate: data.restingHeartRate || 0,
         });
+        // Sync to watch after loading
+        syncStatsToWatch();
       } else {
         // Initialize empty data for today and save to Firebase
         const emptyData: DailyHealthData = {

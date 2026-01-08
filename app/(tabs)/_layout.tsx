@@ -86,6 +86,12 @@ export default function TabsLayout() {
           href: null, // Hide from tab bar
         }}
       />
+      <Tabs.Screen
+        name="watch-connection"
+        options={{
+          href: null, // Hide from tab bar
+        }}
+      />
     </Tabs>
   );
 }

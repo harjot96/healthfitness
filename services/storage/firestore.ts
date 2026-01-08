@@ -86,6 +86,17 @@ export const saveDailyHealthData = async (uid: string, data: DailyHealthData) =>
           caloriesBurned: ex.caloriesBurned,
           notes: ex.notes,
         })),
+        locationTrack: workout.locationTrack ? workout.locationTrack.map(point => ({
+          latitude: point.latitude,
+          longitude: point.longitude,
+          timestamp: Timestamp.fromDate(point.timestamp),
+          altitude: point.altitude,
+          speed: point.speed,
+          accuracy: point.accuracy,
+        })) : undefined,
+        distance: workout.distance,
+        averageSpeed: workout.averageSpeed,
+        maxSpeed: workout.maxSpeed,
       })),
       fastingSession: data.fastingSession ? {
         id: data.fastingSession.id,
@@ -120,6 +131,20 @@ export const getDailyHealthData = async (uid: string, date: string): Promise<Dai
     if (healthSnap.exists()) {
       const data = healthSnap.data();
       console.log('[Firestore] Data found for date:', date);
+      // Helper function to safely convert Firestore Timestamp to Date
+      const toDate = (timestamp: any): Date => {
+        if (!timestamp) return new Date();
+        if (timestamp instanceof Date) return timestamp;
+        if (timestamp.toDate && typeof timestamp.toDate === 'function') {
+          return timestamp.toDate();
+        }
+        // If it's already a date string or number
+        if (typeof timestamp === 'string' || typeof timestamp === 'number') {
+          return new Date(timestamp);
+        }
+        return new Date();
+      };
+
       return {
         ...data,
         meals: (data.meals || []).map((meal: any) => ({
@@ -133,19 +158,21 @@ export const getDailyHealthData = async (uid: string, date: string): Promise<Dai
             protein: meal.macros?.protein || 0,
             fat: meal.macros?.fat || 0,
           },
-          timestamp: meal.timestamp.toDate(),
+          timestamp: toDate(meal.timestamp),
         })),
         waterEntries: (data.waterEntries || []).map((entry: any) => ({
           ...entry,
-          timestamp: entry.timestamp.toDate(),
+          id: entry.id,
+          glasses: entry.glasses || 0,
+          timestamp: toDate(entry.timestamp),
         })),
         workouts: (data.workouts || []).map((workout: any) => ({
           ...workout,
           id: workout.id,
           name: workout.name,
           type: workout.type,
-          startTime: workout.startTime.toDate(),
-          endTime: workout.endTime ? workout.endTime.toDate() : undefined,
+          startTime: toDate(workout.startTime),
+          endTime: workout.endTime ? toDate(workout.endTime) : undefined,
           duration: workout.duration || 0,
           totalCaloriesBurned: workout.totalCaloriesBurned || 0,
           date: workout.date,
@@ -160,12 +187,27 @@ export const getDailyHealthData = async (uid: string, date: string): Promise<Dai
             caloriesBurned: ex.caloriesBurned,
             notes: ex.notes,
           })),
+          locationTrack: workout.locationTrack ? workout.locationTrack.map((point: any) => ({
+            latitude: point.latitude,
+            longitude: point.longitude,
+            timestamp: point.timestamp?.toDate ? point.timestamp.toDate() : new Date(point.timestamp),
+            altitude: point.altitude,
+            speed: point.speed,
+            accuracy: point.accuracy,
+          })) : undefined,
+          distance: workout.distance,
+          averageSpeed: workout.averageSpeed,
+          maxSpeed: workout.maxSpeed,
         })),
         waterIntake: data.waterIntake || 0,
         fastingSession: data.fastingSession ? {
           ...data.fastingSession,
-          startTime: data.fastingSession.startTime.toDate(),
-          endTime: data.fastingSession.endTime ? data.fastingSession.endTime.toDate() : undefined,
+          id: data.fastingSession.id,
+          type: data.fastingSession.type,
+          startTime: toDate(data.fastingSession.startTime),
+          endTime: data.fastingSession.endTime ? toDate(data.fastingSession.endTime) : undefined,
+          duration: data.fastingSession.duration || 0,
+          targetDuration: data.fastingSession.targetDuration,
         } : undefined,
       } as DailyHealthData;
     }
@@ -551,6 +593,14 @@ export const addWorkout = async (uid: string, date: string, workout: Workout) =>
     }
     
     console.log('[Firestore] Adding workout for user:', uid, 'date:', date);
+    console.log('[Firestore] Workout data:', {
+      id: workout.id,
+      name: workout.name,
+      type: workout.type,
+      exercisesCount: workout.exercises?.length || 0,
+      locationTrackLength: workout.locationTrack?.length || 0,
+    });
+    
     const healthRef = doc(db, 'users', uid, 'health', date);
     const healthSnap = await getDoc(healthRef);
     
@@ -565,26 +615,47 @@ export const addWorkout = async (uid: string, date: string, workout: Workout) =>
       workouts: [],
     };
     
-    const updatedWorkouts = [...(existingData.workouts || []), {
-      ...workout,
-      startTime: Timestamp.fromDate(workout.startTime),
-      endTime: workout.endTime ? Timestamp.fromDate(workout.endTime) : null,
-      exercises: workout.exercises.map(ex => ({
-        ...ex,
-        // Ensure all exercise fields are preserved
-        id: ex.id,
-        name: ex.name,
-        category: ex.category,
-        sets: ex.sets,
-        reps: ex.reps,
-        weight: ex.weight,
-        duration: ex.duration,
-        caloriesBurned: ex.caloriesBurned,
-        notes: ex.notes,
+    // Validate and prepare workout data
+    const workoutData = {
+      id: workout.id || Date.now().toString(),
+      name: workout.name || 'Untitled Workout',
+      type: workout.type || 'strength',
+      exercises: (workout.exercises || []).map(ex => ({
+        id: ex.id || Date.now().toString(),
+        name: ex.name || 'Exercise',
+        category: ex.category || 'strength',
+        sets: ex.sets || 0,
+        reps: ex.reps || 0,
+        weight: ex.weight || 0,
+        duration: ex.duration || 0,
+        caloriesBurned: ex.caloriesBurned || 0,
+        notes: ex.notes || '',
       })),
-    }];
+      startTime: workout.startTime instanceof Date ? Timestamp.fromDate(workout.startTime) : Timestamp.now(),
+      endTime: workout.endTime && workout.endTime instanceof Date ? Timestamp.fromDate(workout.endTime) : null,
+      duration: workout.duration || 0,
+      totalCaloriesBurned: workout.totalCaloriesBurned || 0,
+      date: workout.date || date,
+      locationTrack: workout.locationTrack && Array.isArray(workout.locationTrack) && workout.locationTrack.length > 0 
+        ? workout.locationTrack
+            .filter(point => point && typeof point.latitude === 'number' && typeof point.longitude === 'number')
+            .map(point => ({
+              latitude: point.latitude,
+              longitude: point.longitude,
+              timestamp: point.timestamp instanceof Date ? Timestamp.fromDate(point.timestamp) : Timestamp.now(),
+              altitude: point.altitude || null,
+              speed: point.speed || null,
+              accuracy: point.accuracy || null,
+            }))
+        : undefined,
+      distance: workout.distance && workout.distance > 0 ? workout.distance : null,
+      averageSpeed: workout.averageSpeed && workout.averageSpeed > 0 ? workout.averageSpeed : null,
+      maxSpeed: workout.maxSpeed && workout.maxSpeed > 0 ? workout.maxSpeed : null,
+    };
+
+    const updatedWorkouts = [...(existingData.workouts || []), workoutData];
     
-    const updatedCaloriesBurned = (existingData.caloriesBurned || 0) + workout.totalCaloriesBurned;
+    const updatedCaloriesBurned = (existingData.caloriesBurned || 0) + workoutData.totalCaloriesBurned;
     
     await setDoc(healthRef, {
       ...existingData,
@@ -597,6 +668,24 @@ export const addWorkout = async (uid: string, date: string, workout: Workout) =>
   } catch (error: any) {
     console.error('[Firestore] Error adding workout:', error);
     console.error('[Firestore] Error code:', error.code);
-    throw new Error(error.message || 'Failed to add workout');
+    console.error('[Firestore] Error details:', {
+      uid,
+      date,
+      workoutId: workout.id,
+      workoutName: workout.name,
+      locationTrackLength: workout.locationTrack?.length,
+    });
+    
+    // Provide more helpful error messages
+    let errorMessage = 'Failed to add workout';
+    if (error.code === 'permission-denied') {
+      errorMessage = 'Permission denied. Please check your Firestore security rules.';
+    } else if (error.code === 'unavailable') {
+      errorMessage = 'Firestore is temporarily unavailable. Please try again.';
+    } else if (error.message) {
+      errorMessage = error.message;
+    }
+    
+    throw new Error(errorMessage);
   }
 };

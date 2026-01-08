@@ -90,14 +90,28 @@ export interface Exercise {
   notes?: string;
 }
 
+export interface LocationPoint {
+  latitude: number;
+  longitude: number;
+  timestamp: Date;
+  altitude?: number;
+  speed?: number; // m/s
+  accuracy?: number;
+}
+
 export interface Workout {
   id: string;
   name: string;
-  type: 'cardio' | 'strength' | 'hiit' | 'yoga' | 'pilates' | 'running' | 'cycling' | 'swimming' | 'other';
+  type: 'cardio' | 'strength' | 'hiit' | 'yoga' | 'pilates' | 'running' | 'cycling' | 'walking' | 'swimming' | 'other';
   exercises: Exercise[];
   startTime: Date;
   endTime?: Date;
   duration: number; // in minutes
   totalCaloriesBurned: number;
   date: string;
+  // Location tracking for running/walking/cycling
+  locationTrack?: LocationPoint[];
+  distance?: number; // in meters
+  averageSpeed?: number; // m/s
+  maxSpeed?: number; // m/s
 }
