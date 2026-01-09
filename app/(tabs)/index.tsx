@@ -14,7 +14,7 @@ import { prepareGraphPoints, prepareLastNDaysPoints, calculateTrend, getTrendInd
 import { LinearGradient } from 'expo-linear-gradient';
 import { CircularProgress } from '../../components/common/CircularProgress';
 import { DailyHealthData } from '../../types';
-import { getDailyHealthData, getWeeklyHealthData } from '../../services/storage/firestore';
+import { getDailyHealthData } from '../../services/api/health';
 import Constants from 'expo-constants';
 
 const screenWidth = Dimensions.get('window').width;
@@ -109,7 +109,7 @@ export default function DashboardScreen() {
     if (!user) return;
     try {
       const dates = datePickerDates.map(d => format(d, 'yyyy-MM-dd'));
-      const dataPromises = dates.map(date => getDailyHealthData(user.uid, date));
+      const dataPromises = dates.map(date => getDailyHealthData(date));
       const results = await Promise.all(dataPromises);
       
       const map = new Map<string, DailyHealthData>();
@@ -154,7 +154,7 @@ export default function DashboardScreen() {
       
       // Always fetch from Firebase when date changes
       console.log(`[Dashboard] Loading data from Firebase for date: ${dateStr}`);
-      const data = await getDailyHealthData(user.uid, dateStr);
+      const data = await getDailyHealthData(dateStr);
       
       if (data) {
         console.log(`[Dashboard] Data loaded for ${dateStr}:`, {
@@ -187,7 +187,7 @@ export default function DashboardScreen() {
   const fetchDateDataInBackground = async (dateStr: string) => {
     if (!user) return;
     try {
-      const data = await getDailyHealthData(user.uid, dateStr);
+      const data = await getDailyHealthData(dateStr);
       if (data) {
         setDateDataMap(prev => new Map(prev).set(dateStr, data));
       }
@@ -199,8 +199,28 @@ export default function DashboardScreen() {
   const loadWeeklyData = async () => {
     if (!user) return;
     try {
-      const data = await getWeeklyHealthData(user.uid);
-      setWeeklyData(data);
+      // TODO: Implement weekly health data query in GraphQL
+      // For now, load last 7 days individually
+      const dates = Array.from({ length: 7 }, (_, i) => {
+        const date = new Date();
+        date.setDate(date.getDate() - i);
+        return format(date, 'yyyy-MM-dd');
+      });
+      
+      const dataPromises = dates.map(date => getDailyHealthData(date));
+      const results = await Promise.all(dataPromises);
+      
+      const weeklyData = results
+        .filter(data => data !== null)
+        .map(data => ({
+          date: data!.date,
+          steps: data!.steps,
+          caloriesConsumed: data!.caloriesConsumed,
+          caloriesBurned: data!.caloriesBurned,
+          waterIntake: data!.waterIntake,
+        }));
+      
+      setWeeklyData(weeklyData);
     } catch (error) {
       console.error('Error loading weekly data:', error);
     }

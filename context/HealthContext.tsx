@@ -1,8 +1,8 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { Platform } from 'react-native';
 import { useAuth } from './AuthContext';
 import { DailyHealthData, Meal, FastingSession, HealthMetrics, WaterEntry, Workout } from '../types';
-import { getDailyHealthData, updateHealthMetrics, addMeal as saveMeal, saveFastingSession, saveDailyHealthData, addWaterEntry as saveWaterEntry, addWorkout as saveWorkout } from '../services/storage/firestore';
+import { getDailyHealthData, saveDailyHealthData, addMeal as saveMeal, saveFastingSession, addWaterEntry as saveWaterEntry, addWorkout as saveWorkout, updateHealthMetrics, updateRingStats } from '../services/api/health';
 import { waterTrackingService } from '../services/health/waterTracking';
 import { fastingNotificationService } from '../services/health/fastingNotifications';
 import { stepCounterService } from '../services/health/stepCounter';
@@ -21,6 +21,7 @@ interface HealthContextType {
   addWaterEntry: (glasses: number) => Promise<void>;
   addWorkout: (workout: Workout) => Promise<void>;
   refreshHealthData: () => Promise<void>;
+  flushTodayData: () => Promise<void>;
 }
 
 const HealthContext = createContext<HealthContextType | undefined>(undefined);
@@ -40,6 +41,12 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const [currentDate, setCurrentDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const today = currentDate;
+  
+  // Use ref to get latest todayData in intervals
+  const todayDataRef = React.useRef<DailyHealthData | null>(null);
+  useEffect(() => {
+    todayDataRef.current = todayData;
+  }, [todayData]);
 
   // Check if date has changed (e.g., at midnight)
   useEffect(() => {
@@ -50,7 +57,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         if (user && todayData) {
           // Save previous day's data before loading new day
           try {
-            await saveDailyHealthData(user.uid, todayData);
+            await saveDailyHealthData(todayData);
           } catch (error) {
             console.error('Error saving previous day data:', error);
           }
@@ -103,31 +110,76 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   // Auto-save data to Firebase periodically (every 30 seconds)
   // Also saves active fasting sessions to update duration in real-time
+  // Checks for fasting completion and auto-completes if target duration is reached
   useEffect(() => {
-    if (!user || !todayData) return;
+    if (!user) return;
 
-    const autoSaveInterval = setInterval(() => {
+    const autoSaveInterval = setInterval(async () => {
+      // Use ref to get latest todayData to avoid stale closure
+      const currentData = todayDataRef.current;
+      if (!currentData) {
+        return;
+      }
+
       // If there's an active fasting session, update its duration before saving
-      if (todayData.fastingSession && !todayData.fastingSession.endTime) {
-        const updatedSession: FastingSession = {
-          ...todayData.fastingSession,
-          duration: (Date.now() - todayData.fastingSession.startTime.getTime()) / (1000 * 60 * 60),
-        };
-        const updatedData: DailyHealthData = {
-          ...todayData,
-          fastingSession: updatedSession,
-        };
-        setTodayData(updatedData);
-        saveDailyHealthData(user.uid, updatedData).catch(error => {
-          console.error('[HealthContext] Error auto-saving fasting session:', error);
-        });
+      if (currentData.fastingSession && !currentData.fastingSession.endTime) {
+        const now = Date.now();
+        const startTime = currentData.fastingSession.startTime.getTime();
+        const durationHours = (now - startTime) / (1000 * 60 * 60);
+        
+        // Check if target duration is reached and auto-complete
+        if (currentData.fastingSession.targetDuration && durationHours >= currentData.fastingSession.targetDuration) {
+          // Auto-complete the fasting session
+          const completedSession: FastingSession = {
+            ...currentData.fastingSession,
+            endTime: new Date(),
+            duration: currentData.fastingSession.targetDuration, // Use target duration as actual duration
+          };
+          
+          const updatedData: DailyHealthData = {
+            ...currentData,
+            fastingSession: completedSession,
+          };
+          
+          setTodayData(updatedData);
+          
+          try {
+            await saveFastingSession(today, completedSession);
+            await saveDailyHealthData(updatedData);
+            await fastingNotificationService.cancelAllNotifications();
+            console.log('[HealthContext] Fasting completed automatically - target duration reached');
+            
+            // TODO: Trigger completion notification via GraphQL
+          } catch (error) {
+            console.error('[HealthContext] Error auto-completing fasting session:', error);
+          }
+        } else {
+          // Double-check that session hasn't been stopped (using latest ref)
+          const latestData = todayDataRef.current;
+          if (latestData?.fastingSession && !latestData.fastingSession.endTime) {
+            // Update duration without completing
+            const updatedSession: FastingSession = {
+              ...latestData.fastingSession,
+              duration: durationHours,
+            };
+            const updatedData: DailyHealthData = {
+              ...latestData,
+              fastingSession: updatedSession,
+            };
+            setTodayData(updatedData);
+            saveDailyHealthData(updatedData).catch(error => {
+              console.error('[HealthContext] Error auto-saving fasting session:', error);
+            });
+          }
+        }
       } else {
+        // Save other data (not fasting-related)
         saveTodayDataToFirebase();
       }
     }, 30000); // Save every 30 seconds
 
     return () => clearInterval(autoSaveInterval);
-  }, [user, todayData]);
+  }, [user]);
 
   // Save data when app goes to background or component unmounts
   useEffect(() => {
@@ -196,14 +248,14 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           steps: data.steps,
         }));
         if (user && todayData) {
-          await updateHealthMetrics(user.uid, today, { steps: data.steps });
-          // Update local data and save complete data to Firebase
+          await updateHealthMetrics(today, { steps: data.steps });
+          // Update local data and save complete data
           const updatedData: DailyHealthData = {
             ...todayData,
             steps: data.steps,
           };
           setTodayData(updatedData);
-          await saveDailyHealthData(user.uid, updatedData);
+          await saveDailyHealthData(updatedData);
         }
       });
     }
@@ -221,7 +273,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         restingHeartRate: data.restingHeartRate,
       });
       if (user && todayData) {
-        await updateHealthMetrics(user.uid, today, {
+        await updateHealthMetrics(today, {
           steps: data.steps,
           caloriesBurned: data.activeEnergyBurned,
           activeEnergyBurned: data.activeEnergyBurned,
@@ -229,7 +281,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           heartRate: data.heartRate,
           restingHeartRate: data.restingHeartRate,
         });
-        // Update local data and save complete data to Firebase
+        // Update local data and save complete data
         const updatedData: DailyHealthData = {
           ...todayData,
           steps: data.steps,
@@ -240,7 +292,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           restingHeartRate: data.restingHeartRate,
         };
         setTodayData(updatedData);
-        await saveDailyHealthData(user.uid, updatedData);
+        await saveDailyHealthData(updatedData);
       }
     } catch (error) {
       console.error('Error loading HealthKit data:', error);
@@ -271,9 +323,33 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     
     try {
       setLoading(true);
-      const data = await getDailyHealthData(user.uid, today);
+      const data = await getDailyHealthData(today);
       if (data) {
-        setTodayData(data);
+        // Check if we have a local stopped session that hasn't been saved yet
+        const currentLocalData = todayDataRef.current;
+        if (currentLocalData?.fastingSession?.endTime && 
+            (!data.fastingSession?.endTime || 
+             data.fastingSession.endTime.getTime() !== currentLocalData.fastingSession.endTime.getTime())) {
+          // Local data has a stopped session that Firebase doesn't have yet
+          // Keep the local stopped session and save it again
+          console.log('[HealthContext] Local stopped session not yet in Firebase, preserving it...');
+          const preservedData: DailyHealthData = {
+            ...data,
+            fastingSession: currentLocalData.fastingSession,
+          };
+          setTodayData(preservedData);
+          todayDataRef.current = preservedData;
+          // Try to save again
+          if (currentLocalData.fastingSession) {
+            await saveFastingSession(today, currentLocalData.fastingSession);
+            await saveDailyHealthData(preservedData);
+          }
+        } else {
+          // Normal load - Firebase data is up to date
+          setTodayData(data);
+          todayDataRef.current = data;
+        }
+        
         setHealthMetrics({
           steps: data.steps,
           caloriesBurned: data.caloriesBurned,
@@ -301,8 +377,9 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           workouts: [],
         };
         setTodayData(emptyData);
-        // Save empty data to Firebase to ensure document exists
-        await saveDailyHealthData(user.uid, emptyData);
+        todayDataRef.current = emptyData;
+        // Save empty data to ensure document exists
+        await saveDailyHealthData(emptyData);
       }
     } catch (error) {
       console.error('Error loading today data:', error);
@@ -311,24 +388,65 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
-  // Save complete daily data to Firebase
+  // Update ring stats
+  const updateRingStatsToBackend = async (data: DailyHealthData) => {
+    if (!user) return;
+
+    try {
+      // Calculate workout minutes from workouts
+      const workoutMinutes = data.workouts.reduce((total, workout) => {
+        return total + (workout.duration || 0);
+      }, 0);
+
+      // Default goals (can be customized later)
+      const goalCalories = 600;
+      const goalSteps = 8000;
+      const goalMinutes = 45;
+
+      await updateRingStats({
+        date: data.date,
+        caloriesBurned: data.caloriesBurned || 0,
+        steps: data.steps || 0,
+        workoutMinutes,
+        goalCalories,
+        goalSteps,
+        goalMinutes,
+      });
+
+      console.log('[HealthContext] Ring stats updated');
+    } catch (error) {
+      console.error('[HealthContext] Error updating ring stats:', error);
+      // Don't throw - ring stats update is not critical
+    }
+  };
+
+  // Save complete daily data
   const saveTodayDataToFirebase = async () => {
-    if (!user || !todayData) {
-      console.warn('[HealthContext] Cannot save: user or todayData is missing', { user: !!user, todayData: !!todayData });
+    if (!user) {
+      console.warn('[HealthContext] Cannot save: user is missing');
+      return;
+    }
+    
+    // Use ref to get latest data
+    const currentData = todayDataRef.current;
+    if (!currentData) {
+      console.warn('[HealthContext] Cannot save: todayData is missing');
       return;
     }
     
     try {
-      console.log('[HealthContext] Saving today data to Firebase...');
-      await saveDailyHealthData(user.uid, todayData);
-      console.log('[HealthContext] Successfully saved today data to Firebase');
+      console.log('[HealthContext] Saving today data...');
+      await saveDailyHealthData(currentData);
+      console.log('[HealthContext] Successfully saved today data');
+      
+      // Update ring stats
+      await updateRingStatsToBackend(currentData);
     } catch (error: any) {
-      console.error('[HealthContext] Error saving today data to Firebase:', error);
+      console.error('[HealthContext] Error saving today data:', error);
       console.error('[HealthContext] Error details:', {
-        code: error.code,
         message: error.message,
         userId: user.uid,
-        date: todayData.date,
+        date: currentData.date,
       });
     }
   };
@@ -337,7 +455,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (!user || !todayData) return;
     
     try {
-      await saveMeal(user.uid, today, meal);
+      await saveMeal(today, meal);
       const updatedMeals = [...todayData.meals, meal];
       const updatedCalories = updatedMeals.reduce((sum, m) => sum + m.calories, 0);
       
@@ -348,8 +466,8 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       };
       
       setTodayData(updatedData);
-      // Save complete data to Firebase
-      await saveDailyHealthData(user.uid, updatedData);
+      // Save complete data
+      await saveDailyHealthData(updatedData);
     } catch (error) {
       console.error('Error adding meal:', error);
       throw error;
@@ -369,7 +487,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         eatingWindow,
       };
       
-      await saveFastingSession(user.uid, today, session);
+      await saveFastingSession(today, session);
       
       const updatedData: DailyHealthData = {
         ...todayData,
@@ -377,8 +495,14 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       };
       
       setTodayData(updatedData);
-      // Save complete data to Firebase
-      await saveDailyHealthData(user.uid, updatedData);
+      // Save complete data
+      await saveDailyHealthData(updatedData);
+      
+      // Schedule completion notification if target duration is set
+      if (targetDuration && targetDuration > 0) {
+        const remainingMinutes = targetDuration * 60;
+        await fastingNotificationService.scheduleCompletionNotification(remainingMinutes, targetDuration);
+      }
     } catch (error) {
       console.error('Error starting fasting:', error);
       throw error;
@@ -386,28 +510,87 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const stopFasting = async () => {
-    if (!user || !todayData || !todayData.fastingSession) return;
+    if (!user || !todayData || !todayData.fastingSession) {
+      console.error('[HealthContext] Cannot stop fasting: No active session', {
+        hasUser: !!user,
+        hasTodayData: !!todayData,
+        hasFastingSession: !!todayData?.fastingSession,
+      });
+      throw new Error('No active fasting session to stop');
+    }
+    
+    if (todayData.fastingSession.endTime) {
+      console.warn('[HealthContext] Fasting session already completed');
+      throw new Error('Fasting session is already completed');
+    }
     
     try {
+      console.log('[HealthContext] Stopping fasting session...');
+      const now = new Date();
+      const durationHours = (now.getTime() - todayData.fastingSession.startTime.getTime()) / (1000 * 60 * 60);
+      
       const session: FastingSession = {
         ...todayData.fastingSession,
-        endTime: new Date(),
-        duration: (Date.now() - todayData.fastingSession.startTime.getTime()) / (1000 * 60 * 60),
+        endTime: now,
+        duration: durationHours,
       };
       
-      await saveFastingSession(user.uid, today, session);
+      console.log('[HealthContext] Session data:', {
+        id: session.id,
+        type: session.type,
+        duration: durationHours,
+        hasEndTime: !!session.endTime,
+        targetDuration: session.targetDuration,
+      });
       
+      // Update local state first for immediate UI feedback
       const updatedData: DailyHealthData = {
         ...todayData,
         fastingSession: session,
       };
-      
       setTodayData(updatedData);
-      // Save complete data to Firebase
-      await saveDailyHealthData(user.uid, updatedData);
+      // Update ref immediately to prevent auto-save from overwriting
+      todayDataRef.current = updatedData;
+      
+      // Save - CRITICAL: Must complete before any reloads
+      console.log('[HealthContext] Saving fasting session...');
+      await saveFastingSession(today, session);
+      
+      console.log('[HealthContext] Saving complete daily health data...');
+      await saveDailyHealthData(updatedData);
+      
+      // Verify the save by checking one more time
+      console.log('[HealthContext] Verifying save completed...');
+      const verifyData = await getDailyHealthData(today);
+      if (verifyData?.fastingSession) {
+        const savedEndTime = verifyData.fastingSession.endTime;
+        if (savedEndTime) {
+          console.log('[HealthContext] ✓ Verified: endTime is saved in Firebase:', savedEndTime.toISOString());
+        } else {
+          console.warn('[HealthContext] ⚠ Warning: endTime not found after save. Retrying...');
+          // Retry save if verification failed
+          await saveFastingSession(today, session);
+          await saveDailyHealthData(updatedData);
+        }
+      }
+      
+      // Cancel all notifications
+      console.log('[HealthContext] Cancelling notifications...');
       await fastingNotificationService.cancelAllNotifications();
-    } catch (error) {
-      console.error('Error stopping fasting:', error);
+      
+      // TODO: Trigger completion notification via GraphQL if target was reached
+      if (todayData.fastingSession.targetDuration && durationHours >= todayData.fastingSession.targetDuration * 0.9) {
+        console.log('[HealthContext] Fasting target reached - notification can be sent via backend');
+      }
+      
+      console.log('[HealthContext] Fasting session stopped successfully');
+    } catch (error: any) {
+      console.error('[HealthContext] Error stopping fasting:', error);
+      console.error('[HealthContext] Error details:', {
+        message: error.message,
+        code: error.code,
+        stack: error.stack,
+      });
       throw error;
     }
   };
@@ -437,8 +620,9 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         timestamp: new Date(),
       };
       
-      const updatedWaterIntake = await saveWaterEntry(user.uid, today, entry);
+      await saveWaterEntry(today, entry);
       const updatedEntries = [...(todayData.waterEntries || []), entry];
+      const updatedWaterIntake = (todayData.waterIntake || 0) + glasses;
 
       const updatedData: DailyHealthData = {
         ...todayData,
@@ -447,8 +631,8 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       };
 
       setTodayData(updatedData);
-      // Save complete data to Firebase
-      await saveDailyHealthData(user.uid, updatedData);
+      // Save complete data
+      await saveDailyHealthData(updatedData);
     } catch (error) {
       console.error('Error adding water entry:', error);
       throw error;
@@ -459,7 +643,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (!user || !todayData) return;
     
     try {
-      await saveWorkout(user.uid, today, workout);
+      await saveWorkout(today, workout);
       const updatedWorkouts = [...(todayData.workouts || []), workout];
       
       const updatedData: DailyHealthData = {
@@ -469,8 +653,8 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       };
       
       setTodayData(updatedData);
-      // Save complete data to Firebase
-      await saveDailyHealthData(user.uid, updatedData);
+      // Save complete data
+      await saveDailyHealthData(updatedData);
     } catch (error) {
       console.error('Error adding workout:', error);
       throw error;
@@ -491,6 +675,30 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  const flushTodayData = async () => {
+    if (!user || !todayData) return;
+
+    try {
+      let updatedData = todayData;
+
+      if (todayData.fastingSession && !todayData.fastingSession.endTime) {
+        const activeSession: FastingSession = {
+          ...todayData.fastingSession,
+          duration: (Date.now() - todayData.fastingSession.startTime.getTime()) / (1000 * 60 * 60),
+        };
+        updatedData = {
+          ...todayData,
+          fastingSession: activeSession,
+        };
+        await saveFastingSession(today, activeSession);
+      }
+
+      await saveDailyHealthData(updatedData);
+    } catch (error) {
+      console.error('Error flushing health data:', error);
+    }
+  };
+
   return (
     <HealthContext.Provider
       value={{
@@ -503,6 +711,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         addWaterEntry,
         addWorkout,
         refreshHealthData,
+        flushTodayData,
       }}
     >
       {children}

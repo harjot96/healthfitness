@@ -120,3 +120,102 @@ export interface Workout {
   averageSpeed?: number; // m/s
   maxSpeed?: number; // m/s
 }
+
+// Community Types
+export type RingsVisibility = 'public' | 'friends' | 'clan' | 'private';
+
+export interface UserPrivacy {
+  ringsVisibility: RingsVisibility;
+  allowFriendRequests: boolean;
+  allowClanInvites: boolean;
+}
+
+export interface UserStatsSummary {
+  caloriesBurnedToday: number;
+  stepsToday: number;
+  workoutMinutesToday: number;
+  ringsUpdatedAt: Date;
+}
+
+export interface FriendRequest {
+  fromUid: string;
+  toUid: string;
+  status: 'pending' | 'accepted' | 'rejected' | 'canceled';
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface Friend {
+  friendUid: string;
+  createdAt: Date;
+  ringsShare: boolean;
+}
+
+export type ClanPrivacy = 'inviteOnly' | 'friendsOnly';
+
+export type ClanRole = 'owner' | 'admin' | 'member';
+
+export type ClanMemberStatus = 'active' | 'invited';
+
+export interface Clan {
+  id: string;
+  name: string;
+  description: string;
+  photoURL: string;
+  ownerUid: string;
+  privacy: ClanPrivacy;
+  createdAt: Date;
+}
+
+export interface ClanMember {
+  uid: string;
+  role: ClanRole;
+  status: ClanMemberStatus;
+  joinedAt: Date;
+}
+
+export interface ClanInvite {
+  clanId: string;
+  fromUid: string;
+  toUid: string;
+  status: 'pending' | 'accepted' | 'rejected';
+  createdAt: Date;
+}
+
+export type NotificationType = 
+  | 'FRIEND_REQUEST' 
+  | 'FRIEND_ACCEPTED' 
+  | 'FRIEND_REJECTED'
+  | 'CLAN_INVITE'
+  | 'CLAN_INVITE_ACCEPTED'
+  | 'CLAN_INVITE_REJECTED'
+  | 'CLAN_MEMBER_REMOVED';
+
+export interface Notification {
+  id: string;
+  type: NotificationType;
+  title: string;
+  body: string;
+  data: {
+    fromUid?: string;
+    clanId?: string;
+    friendRequestId?: string;
+  };
+  read: boolean;
+  createdAt: Date;
+}
+
+export interface RingStats {
+  caloriesBurned: number;
+  steps: number;
+  workoutMinutes: number;
+  goalCalories: number;
+  goalSteps: number;
+  goalMinutes: number;
+  updatedAt: Date;
+}
+
+export interface BlockedUser {
+  blockedUid: string;
+  blockedAt: Date;
+}

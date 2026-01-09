@@ -28,5 +28,6 @@ console.log('[Firebase] Initialized with project:', firebaseConfig.projectId);
 console.log('[Firebase] Firestore database: (default)');
 console.log('[Firebase] Firestore instance created');
 
+export { app };
 export default app;
 

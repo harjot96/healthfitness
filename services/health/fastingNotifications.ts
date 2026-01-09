@@ -162,6 +162,42 @@ class FastingNotificationService {
     await AsyncStorage.setItem(FASTING_NOTIFICATION_IDS_KEY, JSON.stringify(allIds));
   }
 
+  async scheduleCompletionNotification(
+    remainingMinutes: number,
+    targetDuration: number
+  ): Promise<void> {
+    try {
+      if (remainingMinutes <= 0) return;
+
+      const secondsUntil = Math.max(1, remainingMinutes * 60);
+
+      const id = await Notifications.scheduleNotificationAsync({
+        content: {
+          title: '🎉 Fasting Complete!',
+          body: `Congratulations! You've completed your ${targetDuration}-hour fast!`,
+          sound: true,
+          priority: Notifications.AndroidNotificationPriority.HIGH,
+          data: {
+            type: 'fasting_complete',
+            targetDuration,
+          },
+        },
+        trigger: {
+          type: 'timeInterval',
+          seconds: secondsUntil,
+          repeats: false,
+          channelId: Platform.OS === 'android' ? 'fasting-milestones' : undefined,
+        },
+      });
+
+      this.notificationIds.push(id);
+      const allIds = [...this.notificationIds];
+      await AsyncStorage.setItem(FASTING_NOTIFICATION_IDS_KEY, JSON.stringify(allIds));
+    } catch (error) {
+      console.error('Error scheduling completion notification:', error);
+    }
+  }
+
   async cancelAllNotifications(): Promise<void> {
     try {
       const storedIds = await this.loadStoredIds();

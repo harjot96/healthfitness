@@ -21,12 +21,30 @@ import * as Crypto from 'expo-crypto';
 // Complete the auth session for better UX
 WebBrowser.maybeCompleteAuthSession();
 
-export const signUp = async (email: string, password: string, displayName?: string) => {
+export const signUp = async (email: string, password: string, displayName?: string, username?: string) => {
   try {
     const userCredential = await createUserWithEmailAndPassword(auth, email, password);
     if (displayName && userCredential.user) {
       await updateProfile(userCredential.user, { displayName });
     }
+    
+    // Create user document in Firestore
+    const userRef = doc(db, 'users', userCredential.user.uid);
+    const usernameLower = username?.toLowerCase().trim() || email.split('@')[0].toLowerCase();
+    await setDoc(userRef, {
+      email,
+      displayName: displayName || email.split('@')[0],
+      photoURL: '',
+      usernameLower,
+      createdAt: new Date(),
+      lastActiveAt: new Date(),
+      privacy: {
+        ringsVisibility: 'friends',
+        allowFriendRequests: true,
+        allowClanInvites: true,
+      },
+    });
+    
     return userCredential.user;
   } catch (error: any) {
     throw new Error(error.message || 'Failed to sign up');
@@ -118,10 +136,20 @@ export const signInWithGoogle = async () => {
       const userRef = doc(db, 'users', userCredential.user.uid);
       const userSnap = await getDoc(userRef);
       if (!userSnap.exists()) {
+        const email = userCredential.user.email || '';
+        const usernameLower = email.split('@')[0].toLowerCase();
         await setDoc(userRef, {
-          email: userCredential.user.email,
-          displayName: userCredential.user.displayName,
-          photoURL: userCredential.user.photoURL,
+          email,
+          displayName: userCredential.user.displayName || email.split('@')[0],
+          photoURL: userCredential.user.photoURL || '',
+          usernameLower,
+          createdAt: new Date(),
+          lastActiveAt: new Date(),
+          privacy: {
+            ringsVisibility: 'friends',
+            allowFriendRequests: true,
+            allowClanInvites: true,
+          },
         });
       }
 
@@ -178,11 +206,23 @@ export const signInWithApple = async () => {
     const userRef = doc(db, 'users', userCredential.user.uid);
     const userSnap = await getDoc(userRef);
     if (!userSnap.exists()) {
+      const email = credential.email || userCredential.user.email || '';
+      const displayName = credential.fullName
+        ? `${credential.fullName.givenName || ''} ${credential.fullName.familyName || ''}`.trim()
+        : userCredential.user.displayName || email.split('@')[0];
+      const usernameLower = email ? email.split('@')[0].toLowerCase() : displayName.toLowerCase().replace(/\s+/g, '');
       await setDoc(userRef, {
-        email: credential.email || userCredential.user.email,
-        displayName: credential.fullName
-          ? `${credential.fullName.givenName || ''} ${credential.fullName.familyName || ''}`.trim()
-          : userCredential.user.displayName,
+        email,
+        displayName,
+        photoURL: '',
+        usernameLower,
+        createdAt: new Date(),
+        lastActiveAt: new Date(),
+        privacy: {
+          ringsVisibility: 'friends',
+          allowFriendRequests: true,
+          allowClanInvites: true,
+        },
       });
     }
 

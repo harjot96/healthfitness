@@ -2,15 +2,17 @@ import React, { useEffect } from 'react';
 import { View, StyleSheet, Text, ScrollView, TouchableOpacity, Alert, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
+import { useHealth } from '../../context/HealthContext';
 import { useRouter } from 'expo-router';
 import { Button } from '../../components/common/Button';
 import { Ionicons } from '@expo/vector-icons';
-import { getUserProfile } from '../../services/firebase/auth';
+import { getUserProfile } from '../../services/api/auth';
 import { useWatchConnection } from '../../context/WatchConnectionContext';
 import { format } from 'date-fns';
 
 export default function ProfileScreen() {
   const { user, userProfile, signOut } = useAuth();
+  const { flushTodayData } = useHealth();
   const { isConnected, disconnectWatch, lastConnectedAt } = useWatchConnection();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -18,7 +20,7 @@ export default function ProfileScreen() {
   // Refresh profile data from Firebase when screen mounts
   useEffect(() => {
     if (user) {
-      getUserProfile(user.uid).catch(console.error);
+      getUserProfile().catch(console.error);
     }
   }, [user]);
 
@@ -32,6 +34,7 @@ export default function ProfileScreen() {
           text: 'Sign Out',
           style: 'destructive',
           onPress: async () => {
+            await flushTodayData();
             await signOut();
             router.replace('/(auth)/login');
           },
@@ -311,4 +314,3 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
 });
-

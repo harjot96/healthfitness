@@ -1,9 +1,8 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { auth } from '../services/firebase/config';
-import { signIn, signUp, logout, getUserProfile, saveUserProfile, signInWithGoogle, signInWithApple } from '../services/firebase/auth';
+import { signIn, signUp, logout, getUserProfile, saveUserProfile, signInWithGoogle, signInWithApple, getCurrentUser, refreshAccessToken } from '../services/api/auth';
 import { User, UserProfile } from '../types';
 import { watchConnectivityService } from '../services/watch/WatchConnectivityService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface AuthContextType {
   user: User | null;
@@ -25,42 +24,77 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: FirebaseUser | null) => {
-      if (firebaseUser) {
-        const userData: User = {
-          uid: firebaseUser.uid,
-          email: firebaseUser.email || '',
-        };
-        setUser(userData);
-        
-        // Sync authentication status to Apple Watch
-        watchConnectivityService.sendUserAuthStatus(
-          firebaseUser.uid,
-          firebaseUser.email || ''
-        ).catch(error => {
-          console.debug('Watch not available for auth sync:', error);
-        });
-        
-        // Load user profile
-        try {
-          const profile = await getUserProfile(firebaseUser.uid);
-          setUserProfile(profile);
-        } catch (error) {
-          console.error('Error loading user profile:', error);
-        }
-      } else {
-        setUser(null);
-        setUserProfile(null);
-        
-        // Notify watch that user signed out
-        watchConnectivityService.sendUserSignedOut().catch(error => {
-          console.debug('Watch not available for sign out sync:', error);
-        });
-      }
-      setLoading(false);
-    });
+    let mounted = true;
 
-    return unsubscribe;
+    const checkAuth = async () => {
+      try {
+        // Check if we have a token
+        const token = await AsyncStorage.getItem('authToken');
+        
+        if (token) {
+          // Try to get current user
+          const currentUser = await getCurrentUser();
+          
+          if (currentUser && mounted) {
+            setUser(currentUser);
+            
+            // Sync authentication status to Apple Watch
+            watchConnectivityService.sendUserAuthStatus(
+              currentUser.uid,
+              currentUser.email
+            ).catch(error => {
+              console.debug('Watch not available for auth sync:', error);
+            });
+            
+            // Load user profile
+            try {
+              const profile = await getUserProfile();
+              if (mounted) {
+                setUserProfile(profile);
+              }
+            } catch (error) {
+              console.error('Error loading user profile:', error);
+            }
+          } else if (mounted) {
+            // Token might be expired, try to refresh
+            const newToken = await refreshAccessToken();
+            if (newToken) {
+              const refreshedUser = await getCurrentUser();
+              if (refreshedUser && mounted) {
+                setUser(refreshedUser);
+                const profile = await getUserProfile();
+                if (mounted) {
+                  setUserProfile(profile);
+                }
+              }
+            } else if (mounted) {
+              // No valid token, clear everything
+              setUser(null);
+              setUserProfile(null);
+            }
+          }
+        } else if (mounted) {
+          setUser(null);
+          setUserProfile(null);
+        }
+      } catch (error) {
+        console.error('Error checking auth:', error);
+        if (mounted) {
+          setUser(null);
+          setUserProfile(null);
+        }
+      } finally {
+        if (mounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    checkAuth();
+
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   // Listen for auth status requests from watch
@@ -85,15 +119,58 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [user]);
 
   const handleSignIn = async (email: string, password: string) => {
-    await signIn(email, password);
+    try {
+      const response = await signIn(email, password);
+      const userData: User = {
+        uid: response.user.id,
+        email: response.user.email,
+      };
+      setUser(userData);
+      
+      // Load profile
+      const profile = await getUserProfile();
+      setUserProfile(profile);
+      
+      // Sync to watch
+      watchConnectivityService.sendUserAuthStatus(
+        userData.uid,
+        userData.email
+      ).catch(error => {
+        console.debug('Watch not available for auth sync:', error);
+      });
+    } catch (error: any) {
+      throw error;
+    }
   };
 
   const handleSignUp = async (email: string, password: string, displayName?: string) => {
-    await signUp(email, password, displayName);
+    try {
+      const response = await signUp(email, password, displayName);
+      const userData: User = {
+        uid: response.user.id,
+        email: response.user.email,
+      };
+      setUser(userData);
+      
+      // Load profile
+      const profile = await getUserProfile();
+      setUserProfile(profile);
+      
+      // Sync to watch
+      watchConnectivityService.sendUserAuthStatus(
+        userData.uid,
+        userData.email
+      ).catch(error => {
+        console.debug('Watch not available for auth sync:', error);
+      });
+    } catch (error: any) {
+      throw error;
+    }
   };
 
   const handleSignOut = async () => {
     await logout();
+    setUser(null);
     setUserProfile(null);
     
     // Notify watch that user signed out
@@ -104,7 +181,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const handleUpdateProfile = async (profile: UserProfile) => {
     if (!user) throw new Error('User not authenticated');
-    await saveUserProfile(user.uid, profile);
+    await saveUserProfile(profile);
     setUserProfile(profile);
   };
 

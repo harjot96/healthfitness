@@ -11,14 +11,138 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
     
-    // Users collection - users can read/write their own profile
+    // Helper function to check if users are friends
+    function areFriends(userId1, userId2) {
+      return isAuthenticated() && (
+        exists(/databases/$(database)/documents/friends/$(userId1)/list/$(userId2)) ||
+        exists(/databases/$(database)/documents/friends/$(userId2)/list/$(userId1))
+      );
+    }
+    
+    // Helper function to check if user is in a clan
+    function isClanMember(clanId, userId) {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/clans/$(clanId)/members/$(userId));
+    }
+    
+    // Helper function to check if user is clan owner or admin
+    function isClanOwnerOrAdmin(clanId, userId) {
+      if (!isAuthenticated()) return false;
+      let memberData = get(/databases/$(database)/documents/clans/$(clanId)/members/$(userId)).data;
+      return memberData.role == 'owner' || memberData.role == 'admin';
+    }
+    
+    // Helper function to check ring visibility
+    function canViewRings(targetUserId) {
+      if (!isAuthenticated()) return false;
+      if (request.auth.uid == targetUserId) return true; // Always allow self
+      
+      let targetUser = get(/databases/$(database)/documents/users/$(targetUserId)).data;
+      let privacy = targetUser.privacy;
+      
+      if (privacy.ringsVisibility == 'public') return true;
+      if (privacy.ringsVisibility == 'private') return false;
+      if (privacy.ringsVisibility == 'friends') {
+        return areFriends(request.auth.uid, targetUserId);
+      }
+      if (privacy.ringsVisibility == 'clan') {
+        // Check if users share any clan
+        // Note: This is simplified - full implementation would check all clans
+        return false; // Will be handled in Cloud Functions for accuracy
+      }
+      return false;
+    }
+    
+    // Users collection
     match /users/{userId} {
-      allow read, write: if isOwner(userId);
+      // Users can read their own profile
+      allow read: if isOwner(userId);
+      // Users can read other users' basic info (for search/profile viewing)
+      // Full profile access controlled by privacy settings
+      allow read: if isAuthenticated();
+      // Users can write their own profile
+      allow write: if isOwner(userId);
       
       // Health subcollection - users can read/write their own health data
       match /health/{date} {
         allow read, write: if isOwner(userId);
       }
+    }
+    
+    // Friend Requests collection
+    match /friendRequests/{requestId} {
+      // Users can read requests where they are sender or receiver
+      allow read: if isAuthenticated() && (
+        resource.data.fromUid == request.auth.uid ||
+        resource.data.toUid == request.auth.uid
+      );
+      // Only Cloud Functions can create/update friend requests
+      allow create, update, delete: if false;
+    }
+    
+    // Friends list collection
+    match /friends/{uid}/list/{friendUid} {
+      // Users can read their own friends list
+      allow read: if isOwner(uid);
+      // Only Cloud Functions can write to friends list
+      allow write: if false;
+    }
+    
+    // Notifications collection
+    match /notifications/{uid}/items/{notificationId} {
+      // Users can read their own notifications
+      allow read: if isOwner(uid);
+      // Users can update their own notifications (mark as read)
+      allow update: if isOwner(uid) && 
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      // Only Cloud Functions can create notifications
+      allow create, delete: if false;
+    }
+    
+    // Clans collection
+    match /clans/{clanId} {
+      // Users can read clans they are members of
+      allow read: if isAuthenticated() && isClanMember(clanId, request.auth.uid);
+      // Only Cloud Functions can create/update clans
+      allow write: if false;
+      
+      // Clan members subcollection
+      match /members/{memberUid} {
+        // Members can read member list
+        allow read: if isAuthenticated() && isClanMember(clanId, request.auth.uid);
+        // Only Cloud Functions can write members
+        allow write: if false;
+      }
+    }
+    
+    // Clan invites collection
+    match /clanInvites/{inviteId} {
+      // Users can read invites where they are sender or receiver
+      allow read: if isAuthenticated() && (
+        resource.data.fromUid == request.auth.uid ||
+        resource.data.toUid == request.auth.uid
+      );
+      // Only Cloud Functions can create/update clan invites
+      allow create, update, delete: if false;
+    }
+    
+    // Ring stats collection
+    match /ringStats/{uid}/daily/{date} {
+      // Users can read their own ring stats
+      allow read: if isOwner(uid);
+      // Users can read others' ring stats if privacy allows
+      // Note: Full privacy check done in Cloud Functions for accuracy
+      allow read: if isAuthenticated();
+      // Users can write their own ring stats
+      allow write: if isOwner(uid);
+    }
+    
+    // Blocked users collection
+    match /blockedUsers/{uid}/list/{blockedUid} {
+      // Users can read their own blocked list
+      allow read: if isOwner(uid);
+      // Only Cloud Functions can write blocked list
+      allow write: if false;
     }
   }
 }

@@ -3,7 +3,7 @@ import { View, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CalorieCalculator } from '../../components/health/CalorieCalculator';
 import { useAuth } from '../../context/AuthContext';
-import { getUserProfile } from '../../services/firebase/auth';
+import { getUserProfile } from '../../services/api/auth';
 
 export default function CaloriesScreen() {
   const insets = useSafeAreaInsets();
@@ -13,7 +13,7 @@ export default function CaloriesScreen() {
   useEffect(() => {
     if (user) {
       // Profile is already loaded via AuthContext, but we ensure it's fresh
-      getUserProfile(user.uid).catch(console.error);
+      getUserProfile().catch(console.error);
     }
   }, [user]);
 

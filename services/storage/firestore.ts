@@ -9,8 +9,9 @@ import {
   Timestamp,
   updateDoc,
 } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { format, startOfWeek, endOfWeek, startOfMonth, endOfMonth } from 'date-fns';
-import { db } from '../firebase/config';
+import { db, app } from '../firebase/config';
 import { DailyHealthData, Meal, FastingSession, MealSuggestion, WaterEntry, Workout } from '../../types';
 
 const stripUndefined = <T>(value: T): T => {
@@ -105,10 +106,11 @@ export const saveDailyHealthData = async (uid: string, data: DailyHealthData) =>
         endTime: data.fastingSession.endTime ? Timestamp.fromDate(data.fastingSession.endTime) : null,
         duration: data.fastingSession.duration || 0,
         targetDuration: data.fastingSession.targetDuration,
+        eatingWindow: data.fastingSession.eatingWindow || undefined,
       } : null,
     });
     
-    await setDoc(healthRef, dataToSave);
+    await setDoc(healthRef, dataToSave, { merge: true });
     console.log('[Firestore] Successfully saved daily health data');
   } catch (error: any) {
     console.error('[Firestore] Error saving daily health data:', error);
@@ -332,15 +334,95 @@ export const getMealSuggestions = async (uid: string): Promise<MealSuggestion[]>
 
 export const saveFastingSession = async (uid: string, date: string, session: FastingSession) => {
   try {
+    console.log('[Firestore] Saving fasting session for user:', uid, 'date:', date);
+    console.log('[Firestore] Session data:', {
+      id: session.id,
+      type: session.type,
+      duration: session.duration,
+      hasEndTime: !!session.endTime,
+      endTime: session.endTime?.toISOString(),
+      targetDuration: session.targetDuration,
+    });
+    
     const healthRef = doc(db, 'users', uid, 'health', date);
+    const sessionData: any = {
+      id: session.id,
+      type: session.type,
+      duration: session.duration,
+      startTime: Timestamp.fromDate(session.startTime),
+      // Explicitly set endTime - if it exists, save it; if not, explicitly set to null
+      endTime: session.endTime ? Timestamp.fromDate(session.endTime) : null,
+    };
+    
+    if (session.targetDuration !== undefined) {
+      sessionData.targetDuration = session.targetDuration;
+    }
+    
+    if (session.eatingWindow) {
+      sessionData.eatingWindow = session.eatingWindow;
+    }
+    
+    // Use setDoc with merge to update only the fastingSession field
     await setDoc(healthRef, {
-      fastingSession: {
-        ...session,
-        startTime: Timestamp.fromDate(session.startTime),
-        endTime: session.endTime ? Timestamp.fromDate(session.endTime) : null,
-      },
+      fastingSession: sessionData,
     }, { merge: true });
+    
+    // Verify the save by reading it back
+    try {
+      const verifySnap = await getDoc(healthRef);
+      if (verifySnap.exists()) {
+        const savedData = verifySnap.data();
+        const savedSession = savedData?.fastingSession;
+        if (savedSession) {
+          const savedEndTime = savedSession.endTime;
+          const expectedEndTime = session.endTime ? Timestamp.fromDate(session.endTime) : null;
+          
+          // Compare timestamps - handle both Timestamp and null/undefined cases
+          if (session.endTime && expectedEndTime) {
+            // savedEndTime could be a Timestamp, null, or undefined
+            if (savedEndTime) {
+              // Check if it's a Timestamp object with toMillis method
+              if (typeof savedEndTime.toMillis === 'function') {
+                const savedMillis = savedEndTime.toMillis();
+                const expectedMillis = expectedEndTime.toMillis();
+                if (savedMillis === expectedMillis) {
+                  console.log('[Firestore] Successfully saved fasting session - verified endTime is saved');
+                } else {
+                  console.warn('[Firestore] Warning: endTime timestamp mismatch', {
+                    expected: expectedMillis,
+                    saved: savedMillis,
+                  });
+                }
+              } else {
+                // It might be a different format, log for debugging
+                console.warn('[Firestore] Warning: savedEndTime is not a Timestamp', {
+                  type: typeof savedEndTime,
+                  value: savedEndTime,
+                });
+              }
+            } else {
+              // savedEndTime is null or undefined but we expected it
+              console.warn('[Firestore] Warning: endTime not found in saved data but was expected');
+            }
+          } else if (!session.endTime) {
+            // Active session - no endTime expected
+            if (!savedEndTime || savedEndTime === null) {
+              console.log('[Firestore] Successfully saved fasting session (active session, no endTime)');
+            } else {
+              console.warn('[Firestore] Warning: endTime found in saved data but session is active');
+            }
+          }
+        }
+      }
+    } catch (verifyError) {
+      // Don't fail the save if verification fails - just log it
+      console.warn('[Firestore] Could not verify save (non-critical):', verifyError);
+    }
+    
+    console.log('[Firestore] Successfully saved fasting session');
   } catch (error: any) {
+    console.error('[Firestore] Error saving fasting session:', error);
+    console.error('[Firestore] Error code:', error.code);
     throw new Error(error.message || 'Failed to save fasting session');
   }
 };
@@ -692,5 +774,34 @@ export const addWorkout = async (uid: string, date: string, workout: Workout) =>
     }
     
     throw new Error(errorMessage);
+  }
+};
+
+// Trigger Firebase Cloud Function to send completion notification
+export const triggerFastingCompletionNotification = async (
+  uid: string,
+  session: FastingSession
+): Promise<void> => {
+  try {
+    const functions = getFunctions(app);
+    const sendFastingCompletionNotification = httpsCallable(functions, 'sendFastingCompletionNotification');
+    
+    await sendFastingCompletionNotification({
+      userId: uid,
+      sessionId: session.id,
+      duration: session.duration,
+      type: session.type,
+      targetDuration: session.targetDuration,
+      completedAt: session.endTime?.toISOString() || new Date().toISOString(),
+    });
+    
+    console.log('[Firestore] Triggered fasting completion notification for user:', uid);
+  } catch (error: any) {
+    // Log error but don't throw - notification is not critical
+    console.warn('[Firestore] Failed to trigger fasting completion notification:', error);
+    // Function might not be deployed yet, which is okay
+    if (error.code !== 'not-found' && error.code !== 'functions/not-found') {
+      console.error('[Firestore] Notification error details:', error);
+    }
   }
 };

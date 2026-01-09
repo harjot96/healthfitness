@@ -1,22 +1,23 @@
-import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, ScrollView, Dimensions, TextInput, Alert, Platform, ActivityIndicator, RefreshControl } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, StyleSheet, Text, TouchableOpacity, ScrollView, Dimensions, TextInput, Alert, Platform, ActivityIndicator, RefreshControl, AppState, AppStateStatus } from 'react-native';
 import Constants from 'expo-constants';
 import { useHealth } from '../../context/HealthContext';
 import { useAuth } from '../../context/AuthContext';
 import { Button } from '../common/Button';
 import { CircularProgress } from '../common/CircularProgress';
-import { format, differenceInHours, differenceInMinutes, startOfWeek, endOfWeek, eachDayOfInterval, getDate, subDays } from 'date-fns';
+import { format, differenceInHours, differenceInMinutes, differenceInSeconds, startOfWeek, endOfWeek, eachDayOfInterval, getDate, subDays } from 'date-fns';
 import { getWeeklyFastingData, getMonthlyFastingData } from '../../services/storage/firestore';
 import { Ionicons } from '@expo/vector-icons';
 import { formatDuration } from '../../utils/formatDuration';
 import { GraphContainer } from '../common/GraphContainer';
 import { graphColors, graphGradients } from '../../utils/graphConfig';
 import { prepareWeeklyPoints, prepareMonthlyPoints } from '../../utils/graphHelpers';
+import { fastingNotificationService } from '../../services/health/fastingNotifications';
 
 const screenWidth = Dimensions.get('window').width;
 
 export const FastingTimer: React.FC = () => {
-  const { todayData, startFasting, stopFasting } = useHealth();
+  const { todayData, startFasting, stopFasting, refreshHealthData } = useHealth();
   const { user } = useAuth();
   const [LineGraphComponent, setLineGraphComponent] = useState<any>(null);
   const [selectedType, setSelectedType] = useState('16:8');
@@ -60,14 +61,22 @@ export const FastingTimer: React.FC = () => {
 
   const activeSession = todayData?.fastingSession;
   const isFasting = activeSession && !activeSession.endTime;
+  const appState = useRef(AppState.currentState);
+  const backgroundTimeRef = useRef<Date | null>(null);
+
+  // Calculate elapsed time in minutes properly
+  const calculateElapsedTime = (session: typeof activeSession): number => {
+    if (!session || session.endTime) return 0;
+    const now = new Date();
+    const totalSeconds = differenceInSeconds(now, session.startTime);
+    return Math.floor(totalSeconds / 60); // Convert to minutes
+  };
 
   useEffect(() => {
     // Initialize elapsed time immediately when active session is detected
     if (isFasting && activeSession) {
-      const now = new Date();
-      const elapsed = differenceInHours(now, activeSession.startTime);
-      const minutes = differenceInMinutes(now, activeSession.startTime) % 60;
-      setElapsedTime(elapsed * 60 + minutes);
+      const elapsedMinutes = calculateElapsedTime(activeSession);
+      setElapsedTime(elapsedMinutes);
     } else {
       setElapsedTime(0);
     }
@@ -76,16 +85,66 @@ export const FastingTimer: React.FC = () => {
     let interval: NodeJS.Timeout;
     if (isFasting && activeSession) {
       interval = setInterval(() => {
-        const now = new Date();
-        const elapsed = differenceInHours(now, activeSession.startTime);
-        const minutes = differenceInMinutes(now, activeSession.startTime) % 60;
-        setElapsedTime(elapsed * 60 + minutes);
+        const elapsedMinutes = calculateElapsedTime(activeSession);
+        setElapsedTime(elapsedMinutes);
+        
+        // Check if fasting target is reached - auto-completion is handled in HealthContext
+        // This is just for UI updates
       }, 1000);
     }
     return () => {
       if (interval) clearInterval(interval);
     };
   }, [isFasting, activeSession]);
+
+  // Handle app state changes to continue fasting in background
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', async (nextAppState: AppStateStatus) => {
+      if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
+        // App has come to the foreground
+        if (isFasting && activeSession) {
+          // Refresh elapsed time when app comes back
+          const elapsedMinutes = calculateElapsedTime(activeSession);
+          setElapsedTime(elapsedMinutes);
+          // Refresh health data to sync with Firebase
+          await refreshHealthData();
+        }
+      } else if (appState.current === 'active' && nextAppState.match(/inactive|background/)) {
+        // App has gone to the background
+        if (isFasting && activeSession) {
+          backgroundTimeRef.current = new Date();
+          // Ensure data is saved before going to background
+          if (user) {
+            const elapsedMinutes = calculateElapsedTime(activeSession);
+            const updatedSession = {
+              ...activeSession,
+              duration: elapsedMinutes / 60,
+            };
+            // The auto-save interval in HealthContext will continue to update in background
+            // Also ensure completion notification is scheduled if target duration exists
+            if (activeSession.targetDuration) {
+              const remainingMinutes = (activeSession.targetDuration * 60) - elapsedMinutes;
+              if (remainingMinutes > 0 && remainingMinutes < activeSession.targetDuration * 60 * 2) {
+                try {
+                  await fastingNotificationService.scheduleCompletionNotification(
+                    remainingMinutes,
+                    activeSession.targetDuration
+                  );
+                } catch (error) {
+                  console.error('Error scheduling completion notification:', error);
+                }
+              }
+            }
+          }
+        }
+      }
+      appState.current = nextAppState;
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [isFasting, activeSession, user, refreshHealthData]);
 
   useEffect(() => {
     let cancelled = false;
@@ -279,9 +338,17 @@ export const FastingTimer: React.FC = () => {
     setSelectedEatingWindow('');
   };
 
-  const handleStopFasting = () => {
-    stopFasting();
-    setElapsedTime(0);
+  const handleStopFasting = async () => {
+    try {
+      await stopFasting();
+      setElapsedTime(0);
+      // Cancel all scheduled notifications
+      await fastingNotificationService.cancelAllNotifications();
+      Alert.alert('Fasting Stopped', 'Your fasting session has been completed successfully.');
+    } catch (error: any) {
+      console.error('Error stopping fasting:', error);
+      Alert.alert('Error', error.message || 'Failed to stop fasting. Please try again.');
+    }
   };
 
   const getProgress = () => {
