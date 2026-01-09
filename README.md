@@ -6,6 +6,7 @@ A comprehensive React Native health and fitness application built with Expo, fea
 
 - **Authentication**: Firebase email/password authentication with sign up and sign in flows
 - **Diet Tracking**: Log meals (breakfast, lunch, dinner, snacks) with calories and macros
+  - **AI-Powered Food Recognition**: Upload food images to automatically detect calories, protein, carbs, and fat using OpenAI Vision API
 - **Fasting Timer**: Intermittent fasting tracker with multiple preset types (16:8, 18:6, 20:4, 24:0) and custom options
 - **Calorie Calculator**: BMR and TDEE calculator with personalized recommendations
 - **Step Counter**: 
@@ -31,7 +32,31 @@ A comprehensive React Native health and fitness application built with Expo, fea
 npm install
 ```
 
-### 2. Configure Firebase
+### 2. Configure OpenAI API Key (for Food Image Recognition)
+
+1. Get your OpenAI API key from [OpenAI Platform](https://platform.openai.com/api-keys)
+2. Create a `.env` file in the root directory
+3. Add your API key:
+
+```env
+EXPO_PUBLIC_OPENAI_API_KEY=your-openai-api-key-here
+```
+
+**Note:** The food image recognition feature uses OpenAI's GPT-4 Vision API to analyze food images and automatically detect calories and macros. Make sure you have API credits available.
+
+### 2. Configure OpenAI API Key (Optional - for Food Image Recognition)
+
+1. Get your OpenAI API key from [OpenAI Platform](https://platform.openai.com/api-keys)
+2. Create a `.env` file in the root directory (if it doesn't exist)
+3. Add your API key:
+
+```env
+EXPO_PUBLIC_OPENAI_API_KEY=your-openai-api-key-here
+```
+
+**Note:** This is optional. The food image recognition feature will be disabled if no API key is provided. Users can still manually enter meal information.
+
+### 3. Configure Firebase
 
 1. Create a Firebase project at [Firebase Console](https://console.firebase.google.com/)
 2. Enable Authentication (Email/Password)
@@ -49,13 +74,13 @@ const firebaseConfig = {
 };
 ```
 
-### 3. Configure Health Permissions
+### 4. Configure Health Permissions
 
 The app.json file is already configured with:
 - **iOS**: HealthKit permissions (NSHealthShareUsageDescription, NSHealthUpdateUsageDescription)
 - **Android**: Activity recognition permissions for step counting
 
-### 4. Run the App
+### 5. Run the App
 
 ```bash
 # Start the development server
@@ -133,7 +158,9 @@ The app uses `expo-sensors` for step counting on Android. The implementation is 
 ### Diet Tracker
 - Log meals by type (breakfast, lunch, dinner, snack)
 - Track calories and macros (carbs, protein, fat)
-- View daily calorie summary
+- **AI Food Recognition**: Upload food images to automatically detect nutritional information
+- View daily calorie summary and macros breakdown (pie chart)
+- View weekly calories trend graph
 
 ### Fasting Timer
 - Multiple fasting types: 16:8, 18:6, 20:4, 24:0, or custom

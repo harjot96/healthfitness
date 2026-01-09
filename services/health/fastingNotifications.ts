@@ -88,6 +88,80 @@ class FastingNotificationService {
     }
   }
 
+  async scheduleEatingWindowNotifications(
+    startTime: Date,
+    eatingWindow: { startHour: number; endHour: number; value: string }
+  ): Promise<void> {
+    if (!eatingWindow) return;
+
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    // Calculate eating window start time (today at startHour)
+    const eatingWindowStart = new Date(today);
+    eatingWindowStart.setHours(eatingWindow.startHour, 0, 0, 0);
+    
+    // If eating window has already passed today, schedule for tomorrow
+    if (eatingWindowStart <= now) {
+      eatingWindowStart.setDate(eatingWindowStart.getDate() + 1);
+    }
+
+    // Calculate eating window end time (same day at endHour)
+    const eatingWindowEnd = new Date(eatingWindowStart);
+    eatingWindowEnd.setHours(eatingWindow.endHour, 0, 0, 0);
+    
+    // If end is before start, it means it spans midnight (next day)
+    if (eatingWindowEnd <= eatingWindowStart) {
+      eatingWindowEnd.setDate(eatingWindowEnd.getDate() + 1);
+    }
+
+    const notificationIds: string[] = [];
+
+    // Schedule eating window start notification
+    const secondsUntilStart = Math.max(1, Math.round((eatingWindowStart.getTime() - now.getTime()) / 1000));
+    if (secondsUntilStart > 0 && secondsUntilStart < 86400 * 2) { // Within 2 days
+      const startId = await Notifications.scheduleNotificationAsync({
+        content: {
+          title: 'Eating Window Opens! 🍽️',
+          body: `Your eating window is now open (${eatingWindow.startHour}:00 - ${eatingWindow.endHour}:00)`,
+          sound: true,
+          priority: Notifications.AndroidNotificationPriority.HIGH,
+        },
+        trigger: {
+          type: 'timeInterval',
+          seconds: secondsUntilStart,
+          repeats: false,
+          channelId: Platform.OS === 'android' ? 'fasting-milestones' : undefined,
+        },
+      });
+      notificationIds.push(startId);
+    }
+
+    // Schedule eating window end notification
+    const secondsUntilEnd = Math.max(1, Math.round((eatingWindowEnd.getTime() - now.getTime()) / 1000));
+    if (secondsUntilEnd > 0 && secondsUntilEnd < 86400 * 2) { // Within 2 days
+      const endId = await Notifications.scheduleNotificationAsync({
+        content: {
+          title: 'Eating Window Closes 🔒',
+          body: 'Your eating window has closed. Fasting continues!',
+          sound: true,
+          priority: Notifications.AndroidNotificationPriority.HIGH,
+        },
+        trigger: {
+          type: 'timeInterval',
+          seconds: secondsUntilEnd,
+          repeats: false,
+          channelId: Platform.OS === 'android' ? 'fasting-milestones' : undefined,
+        },
+      });
+      notificationIds.push(endId);
+    }
+
+    this.notificationIds.push(...notificationIds);
+    const allIds = [...this.notificationIds];
+    await AsyncStorage.setItem(FASTING_NOTIFICATION_IDS_KEY, JSON.stringify(allIds));
+  }
+
   async cancelAllNotifications(): Promise<void> {
     try {
       const storedIds = await this.loadStoredIds();

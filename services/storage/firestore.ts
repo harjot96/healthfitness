@@ -9,7 +9,7 @@ import {
   Timestamp,
   updateDoc,
 } from 'firebase/firestore';
-import { format } from 'date-fns';
+import { format, startOfWeek, endOfWeek, startOfMonth, endOfMonth } from 'date-fns';
 import { db } from '../firebase/config';
 import { DailyHealthData, Meal, FastingSession, MealSuggestion, WaterEntry, Workout } from '../../types';
 
@@ -208,6 +208,7 @@ export const getDailyHealthData = async (uid: string, date: string): Promise<Dai
           endTime: data.fastingSession.endTime ? toDate(data.fastingSession.endTime) : undefined,
           duration: data.fastingSession.duration || 0,
           targetDuration: data.fastingSession.targetDuration,
+          eatingWindow: data.fastingSession.eatingWindow || undefined,
         } : undefined,
       } as DailyHealthData;
     }
@@ -449,11 +450,11 @@ export const addWaterEntry = async (uid: string, date: string, entry: WaterEntry
 export const getWeeklyFastingData = async (uid: string): Promise<{ date: string; duration: number; type: string }[]> => {
   try {
     const today = new Date();
-    const weekAgo = new Date(today);
-    weekAgo.setDate(weekAgo.getDate() - 7);
+    const weekStart = startOfWeek(today, { weekStartsOn: 1 }); // Monday
+    const weekEnd = endOfWeek(today, { weekStartsOn: 1 }); // Sunday
     
-    const startDate = format(weekAgo, 'yyyy-MM-dd');
-    const endDate = format(today, 'yyyy-MM-dd');
+    const startDate = format(weekStart, 'yyyy-MM-dd');
+    const endDate = format(weekEnd, 'yyyy-MM-dd');
     
     const healthRef = collection(db, 'users', uid, 'health');
     const q = query(
@@ -484,9 +485,13 @@ export const getWeeklyFastingData = async (uid: string): Promise<{ date: string;
 
 export const getMonthlyFastingData = async (uid: string, year: number, month: number): Promise<{ date: string; duration: number; type: string }[]> => {
   try {
-    const monthStr = String(month).padStart(2, '0');
-    const startDate = `${year}-${monthStr}-01`;
-    const endDate = `${year}-${monthStr}-31`;
+    // month is 1-based (1-12), but Date constructor expects 0-based (0-11)
+    const monthDate = new Date(year, month - 1, 1);
+    const monthStart = startOfMonth(monthDate);
+    const monthEnd = endOfMonth(monthDate);
+    
+    const startDate = format(monthStart, 'yyyy-MM-dd');
+    const endDate = format(monthEnd, 'yyyy-MM-dd');
     
     const healthRef = collection(db, 'users', uid, 'health');
     const q = query(

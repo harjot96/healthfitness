@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, ScrollView, Dimensions, TextInput, Alert, Platform } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, ScrollView, Dimensions, TextInput, Alert, Platform, ActivityIndicator, RefreshControl } from 'react-native';
 import Constants from 'expo-constants';
 import { useHealth } from '../../context/HealthContext';
 import { useAuth } from '../../context/AuthContext';
@@ -9,6 +9,9 @@ import { format, differenceInHours, differenceInMinutes, startOfWeek, endOfWeek,
 import { getWeeklyFastingData, getMonthlyFastingData } from '../../services/storage/firestore';
 import { Ionicons } from '@expo/vector-icons';
 import { formatDuration } from '../../utils/formatDuration';
+import { GraphContainer } from '../common/GraphContainer';
+import { graphColors, graphGradients } from '../../utils/graphConfig';
+import { prepareWeeklyPoints, prepareMonthlyPoints } from '../../utils/graphHelpers';
 
 const screenWidth = Dimensions.get('window').width;
 
@@ -27,7 +30,14 @@ export const FastingTimer: React.FC = () => {
   const [showCustomInputs, setShowCustomInputs] = useState(false);
   const [customEatingHours, setCustomEatingHours] = useState('');
   const [customFastingHours, setCustomFastingHours] = useState('');
+  const [showCustomEatingWindow, setShowCustomEatingWindow] = useState(false);
+  const [customEatingWindowStart, setCustomEatingWindowStart] = useState('');
+  const [customEatingWindowEnd, setCustomEatingWindowEnd] = useState('');
   const [selectedPoint, setSelectedPoint] = useState<{ date: string; value: number } | null>(null);
+  const [loadingWeekly, setLoadingWeekly] = useState(false);
+  const [loadingMonthly, setLoadingMonthly] = useState(false);
+  const [weeklyError, setWeeklyError] = useState<string | null>(null);
+  const [monthlyError, setMonthlyError] = useState<string | null>(null);
   const isExpoGo = Constants.appOwnership === 'expo';
   const canUseGraph = Platform.OS !== 'web' && !isExpoGo;
 
@@ -52,6 +62,17 @@ export const FastingTimer: React.FC = () => {
   const isFasting = activeSession && !activeSession.endTime;
 
   useEffect(() => {
+    // Initialize elapsed time immediately when active session is detected
+    if (isFasting && activeSession) {
+      const now = new Date();
+      const elapsed = differenceInHours(now, activeSession.startTime);
+      const minutes = differenceInMinutes(now, activeSession.startTime) % 60;
+      setElapsedTime(elapsed * 60 + minutes);
+    } else {
+      setElapsedTime(0);
+    }
+
+    // Update elapsed time every second
     let interval: NodeJS.Timeout;
     if (isFasting && activeSession) {
       interval = setInterval(() => {
@@ -100,23 +121,33 @@ export const FastingTimer: React.FC = () => {
 
   const loadWeeklyData = async () => {
     if (!user) return;
+    setLoadingWeekly(true);
+    setWeeklyError(null);
     try {
       const data = await getWeeklyFastingData(user.uid);
       setWeeklyData(data);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error loading weekly fasting data:', error);
+      setWeeklyError(error.message || 'Failed to load weekly data');
+    } finally {
+      setLoadingWeekly(false);
     }
   };
 
   const loadMonthlyData = async () => {
     if (!user) return;
+    setLoadingMonthly(true);
+    setMonthlyError(null);
     try {
       const year = selectedMonth.getFullYear();
       const month = selectedMonth.getMonth() + 1;
       const data = await getMonthlyFastingData(user.uid, year, month);
       setMonthlyData(data);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error loading monthly fasting data:', error);
+      setMonthlyError(error.message || 'Failed to load monthly data');
+    } finally {
+      setLoadingMonthly(false);
     }
   };
 
@@ -160,7 +191,7 @@ export const FastingTimer: React.FC = () => {
           {
             text: 'Continue',
             onPress: () => {
-              startFasting('custom', fastingHours);
+              startFasting('custom', fastingHours, undefined);
               setShowCustomInputs(false);
               setCustomEatingHours('');
               setCustomFastingHours('');
@@ -171,8 +202,8 @@ export const FastingTimer: React.FC = () => {
       return;
     }
 
-    // Start fasting with custom hours
-    startFasting('custom', fastingHours);
+    // Start fasting with custom hours (no eating window for custom fasting type)
+    startFasting('custom', fastingHours, undefined);
     setShowCustomInputs(false);
     setCustomEatingHours('');
     setCustomFastingHours('');
@@ -185,11 +216,62 @@ export const FastingTimer: React.FC = () => {
   };
 
   const handleEatingWindowSelected = (window: string) => {
+    if (window === 'custom') {
+      setShowCustomEatingWindow(true);
+      return;
+    }
+    
     setSelectedEatingWindow(window);
     setShowEatingWindow(false);
+    
+    // Calculate eating window times
+    const [startHour, endHour] = window.split('-').map(Number);
+    const eatingWindow: { startHour: number; endHour: number; value: string } = {
+      startHour,
+      endHour,
+      value: window,
+    };
+    
     // After selecting eating window, proceed to start fasting
     const selected = fastingTypes.find(t => t.value === selectedType);
-    startFasting(selectedType, selected?.hours);
+    startFasting(selectedType, selected?.hours, eatingWindow);
+  };
+
+  const handleCustomEatingWindowConfirm = () => {
+    const startHour = parseInt(customEatingWindowStart, 10);
+    const endHour = parseInt(customEatingWindowEnd, 10);
+
+    // Validation
+    if (isNaN(startHour) || isNaN(endHour)) {
+      Alert.alert('Error', 'Please enter valid hours (0-23)');
+      return;
+    }
+
+    if (startHour < 0 || startHour > 23 || endHour < 0 || endHour > 23) {
+      Alert.alert('Error', 'Hours must be between 0 and 23');
+      return;
+    }
+
+    if (startHour === endHour) {
+      Alert.alert('Error', 'Start and end hours cannot be the same');
+      return;
+    }
+
+    setShowCustomEatingWindow(false);
+    setShowEatingWindow(false);
+    
+    const eatingWindow: { startHour: number; endHour: number; value: string } = {
+      startHour,
+      endHour,
+      value: `custom-${startHour}-${endHour}`,
+    };
+    
+    const selected = fastingTypes.find(t => t.value === selectedType);
+    startFasting(selectedType, selected?.hours, eatingWindow);
+    
+    // Reset custom inputs
+    setCustomEatingWindowStart('');
+    setCustomEatingWindowEnd('');
   };
 
   const handleCancelFasting = () => {
@@ -288,12 +370,69 @@ export const FastingTimer: React.FC = () => {
     setSelectedMonth(newMonth);
   };
 
+  const calculateStreak = (): number => {
+    // Combine weekly and monthly data, remove duplicates
+    const allSessions = [...weeklyData, ...monthlyData];
+    const uniqueSessions = Array.from(
+      new Map(allSessions.map(s => [s.date, s])).values()
+    ).filter(s => s.duration > 0); // Only count completed sessions
+    
+    if (uniqueSessions.length === 0) return 0;
+    
+    // Sort by date descending (most recent first)
+    uniqueSessions.sort((a, b) => b.date.localeCompare(a.date));
+    
+    let streak = 0;
+    const today = format(new Date(), 'yyyy-MM-dd');
+    let currentDate = new Date(today);
+    
+    // Check today first
+    const todaySession = uniqueSessions.find(s => s.date === today);
+    if (todaySession || isFasting) {
+      streak = 1;
+      currentDate = subDays(currentDate, 1);
+    } else {
+      return 0; // No streak if today doesn't have a session
+    }
+    
+    // Check previous days
+    for (let i = 0; i < 365; i++) { // Max streak check of 1 year
+      const dateStr = format(currentDate, 'yyyy-MM-dd');
+      const session = uniqueSessions.find(s => s.date === dateStr);
+      
+      if (session) {
+        streak++;
+        currentDate = subDays(currentDate, 1);
+      } else {
+        break; // Streak broken
+      }
+    }
+    
+    return streak;
+  };
+
   const weeklyStats = getWeeklyStats();
   const monthlyStats = getMonthlyStats();
   const progress = getProgress();
+  const streak = calculateStreak();
+
+  const handleRefresh = async () => {
+    await Promise.all([loadWeeklyData(), loadMonthlyData()]);
+  };
 
   return (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+    <ScrollView 
+      style={styles.container} 
+      showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl
+          refreshing={loadingWeekly || loadingMonthly}
+          onRefresh={handleRefresh}
+          tintColor="#9B59B6"
+          colors={['#9B59B6']}
+        />
+      }
+    >
       <View style={styles.header}>
         <Text style={styles.title}>Fasting Timer</Text>
       </View>
@@ -317,6 +456,14 @@ export const FastingTimer: React.FC = () => {
               <Text style={styles.targetText}>
                 Target: {activeSession.targetDuration}h • {progress.toFixed(1)}% Complete
               </Text>
+            )}
+            {activeSession.eatingWindow && (
+              <View style={styles.eatingWindowInfo}>
+                <Ionicons name="time-outline" size={16} color="#9B59B6" />
+                <Text style={styles.eatingWindowInfoText}>
+                  Eating Window: {activeSession.eatingWindow.startHour}:00 - {activeSession.eatingWindow.endHour}:00
+                </Text>
+              </View>
             )}
           </View>
 
@@ -422,6 +569,72 @@ export const FastingTimer: React.FC = () => {
             </TouchableOpacity>
           </View>
         </View>
+      ) : showCustomEatingWindow ? (
+        <View style={styles.customContainer}>
+          <Text style={styles.customTitle}>Custom Eating Window</Text>
+          <Text style={styles.customSubtitle}>
+            Enter your custom eating window hours (0-23)
+          </Text>
+
+          <View style={styles.customInputContainer}>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Start Hour</Text>
+              <View style={styles.inputWrapper}>
+                <TextInput
+                  style={styles.customInput}
+                  placeholder="e.g., 12"
+                  placeholderTextColor="#999"
+                  value={customEatingWindowStart}
+                  onChangeText={setCustomEatingWindowStart}
+                  keyboardType="numeric"
+                  maxLength={2}
+                />
+                <Text style={styles.inputUnit}>:00</Text>
+              </View>
+              <Text style={styles.inputHint}>Hour when eating window starts (0-23)</Text>
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>End Hour</Text>
+              <View style={styles.inputWrapper}>
+                <TextInput
+                  style={styles.customInput}
+                  placeholder="e.g., 20"
+                  placeholderTextColor="#999"
+                  value={customEatingWindowEnd}
+                  onChangeText={setCustomEatingWindowEnd}
+                  keyboardType="numeric"
+                  maxLength={2}
+                />
+                <Text style={styles.inputUnit}>:00</Text>
+              </View>
+              <Text style={styles.inputHint}>Hour when eating window ends (0-23)</Text>
+            </View>
+          </View>
+
+          <View style={styles.customActions}>
+            <TouchableOpacity
+              style={styles.cancelCustomButton}
+              onPress={() => {
+                setShowCustomEatingWindow(false);
+                setCustomEatingWindowStart('');
+                setCustomEatingWindowEnd('');
+              }}
+            >
+              <Text style={styles.cancelCustomButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.startCustomButton,
+                (!customEatingWindowStart || !customEatingWindowEnd) && styles.startCustomButtonDisabled
+              ]}
+              onPress={handleCustomEatingWindowConfirm}
+              disabled={!customEatingWindowStart || !customEatingWindowEnd}
+            >
+              <Text style={styles.startCustomButtonText}>Confirm</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       ) : showEatingWindow ? (
         <View style={styles.eatingWindowContainer}>
           <Text style={styles.eatingWindowTitle}>Choose Your Eating Window</Text>
@@ -524,6 +737,13 @@ export const FastingTimer: React.FC = () => {
       <View style={styles.statsContainer}>
         <View style={styles.statCard}>
           <View style={styles.statIconContainer}>
+            <Ionicons name="flame" size={20} color="#FF6B35" />
+          </View>
+          <Text style={styles.statValue}>{streak}</Text>
+          <Text style={styles.statLabel}>Day Streak</Text>
+        </View>
+        <View style={styles.statCard}>
+          <View style={styles.statIconContainer}>
             <Ionicons name="calendar" size={20} color="#9B59B6" />
           </View>
           <Text style={styles.statValue}>{weeklyStats.completedSessions}</Text>
@@ -542,13 +762,6 @@ export const FastingTimer: React.FC = () => {
           </View>
           <Text style={styles.statValue}>{formatDuration(weeklyStats.avgHours)}</Text>
           <Text style={styles.statLabel}>Avg Duration</Text>
-        </View>
-        <View style={styles.statCard}>
-          <View style={styles.statIconContainer}>
-            <Ionicons name="trophy" size={20} color="#9B59B6" />
-          </View>
-          <Text style={styles.statValue}>{formatDuration(weeklyStats.longestFast)}</Text>
-          <Text style={styles.statLabel}>Longest Fast</Text>
         </View>
       </View>
 
@@ -576,6 +789,20 @@ export const FastingTimer: React.FC = () => {
         {showChart === 'weekly' ? (
           <View style={styles.chartContainer}>
             <Text style={styles.chartTitle}>Weekly Progress</Text>
+            {loadingWeekly ? (
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color="#9B59B6" />
+                <Text style={styles.loadingText}>Loading weekly data...</Text>
+              </View>
+            ) : weeklyError ? (
+              <View style={styles.errorContainer}>
+                <Ionicons name="alert-circle" size={48} color="#FF6B6B" />
+                <Text style={styles.errorText}>{weeklyError}</Text>
+                <TouchableOpacity style={styles.retryButton} onPress={loadWeeklyData}>
+                  <Text style={styles.retryButtonText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
             <View style={styles.graphWrapper}>
               {LineGraphComponent ? (
                 <>
@@ -583,8 +810,8 @@ export const FastingTimer: React.FC = () => {
                     style={styles.graph}
                     points={weeklyGraphPoints}
                     animated={true}
-                    color="#9B59B6"
-                    gradientFillColors={['#9B59B6', '#8E44AD']}
+                    color={graphColors.fasting}
+                    gradientFillColors={graphGradients.fasting}
                     enablePanGesture={true}
                     enableIndicator={true}
                     indicatorPulsating={true}
@@ -638,7 +865,8 @@ export const FastingTimer: React.FC = () => {
                 </View>
               )}
             </View>
-            {LineGraphComponent && (
+            )}
+            {LineGraphComponent && !loadingWeekly && !weeklyError && (
               <Text style={styles.graphHelperText}>
                 Touch and drag to explore weekly fasting data
               </Text>
@@ -657,6 +885,20 @@ export const FastingTimer: React.FC = () => {
                 <Ionicons name="chevron-forward" size={24} color="#333" />
               </TouchableOpacity>
             </View>
+            {loadingMonthly ? (
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color="#9B59B6" />
+                <Text style={styles.loadingText}>Loading monthly data...</Text>
+              </View>
+            ) : monthlyError ? (
+              <View style={styles.errorContainer}>
+                <Ionicons name="alert-circle" size={48} color="#FF6B6B" />
+                <Text style={styles.errorText}>{monthlyError}</Text>
+                <TouchableOpacity style={styles.retryButton} onPress={loadMonthlyData}>
+                  <Text style={styles.retryButtonText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
             <View style={styles.graphWrapper}>
               {LineGraphComponent ? (
                 <>
@@ -664,8 +906,8 @@ export const FastingTimer: React.FC = () => {
                     style={styles.graph}
                     points={monthlyGraphPoints}
                     animated={true}
-                    color="#9B59B6"
-                    gradientFillColors={['#9B59B6', '#8E44AD']}
+                    color={graphColors.fasting}
+                    gradientFillColors={graphGradients.fasting}
                     enablePanGesture={true}
                     enableIndicator={true}
                     indicatorPulsating={true}
@@ -719,7 +961,8 @@ export const FastingTimer: React.FC = () => {
                 </View>
               )}
             </View>
-            {LineGraphComponent && (
+            )}
+            {LineGraphComponent && !loadingMonthly && !monthlyError && (
               <Text style={styles.graphHelperText}>
                 Touch and drag to explore monthly fasting data
               </Text>
@@ -834,6 +1077,22 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     marginTop: 8,
+  },
+  eatingWindowInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 12,
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#F5E6FF',
+    borderRadius: 8,
+  },
+  eatingWindowInfoText: {
+    fontSize: 14,
+    color: '#9B59B6',
+    fontWeight: '600',
   },
   progressSection: {
     width: '100%',
@@ -1426,5 +1685,40 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#fff',
+  },
+  loadingContainer: {
+    padding: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 200,
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 14,
+    color: '#666',
+  },
+  errorContainer: {
+    padding: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 200,
+  },
+  errorText: {
+    marginTop: 16,
+    fontSize: 14,
+    color: '#FF6B6B',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  retryButton: {
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    backgroundColor: '#9B59B6',
+    borderRadius: 8,
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

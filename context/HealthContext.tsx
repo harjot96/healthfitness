@@ -16,7 +16,7 @@ interface HealthContextType {
   loading: boolean;
   healthMetrics: HealthMetrics;
   addMeal: (meal: Meal) => Promise<void>;
-  startFasting: (type: string, targetDuration?: number) => Promise<void>;
+  startFasting: (type: string, targetDuration?: number, eatingWindow?: { startHour: number; endHour: number; value: string }) => Promise<void>;
   stopFasting: () => Promise<void>;
   addWaterEntry: (glasses: number) => Promise<void>;
   addWorkout: (workout: Workout) => Promise<void>;
@@ -169,6 +169,14 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         session.startTime,
         session.targetDuration
       );
+
+      // Schedule eating window notifications if available
+      if (session.eatingWindow) {
+        await fastingNotificationService.scheduleEatingWindowNotifications(
+          session.startTime,
+          session.eatingWindow
+        );
+      }
     } catch (error) {
       console.error('Error syncing fasting notifications:', error);
     }
@@ -348,7 +356,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
-  const startFasting = async (type: string, targetDuration?: number) => {
+  const startFasting = async (type: string, targetDuration?: number, eatingWindow?: { startHour: number; endHour: number; value: string }) => {
     if (!user || !todayData) return;
     
     try {
@@ -358,6 +366,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         duration: 0,
         type,
         targetDuration,
+        eatingWindow,
       };
       
       await saveFastingSession(user.uid, today, session);

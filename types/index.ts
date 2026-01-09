@@ -67,6 +67,11 @@ export interface FastingSession {
   duration: number;
   type: string;
   targetDuration?: number;
+  eatingWindow?: {
+    startHour: number;
+    endHour: number;
+    value: string;
+  };
 }
 
 export interface HealthMetrics {

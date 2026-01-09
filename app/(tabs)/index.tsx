@@ -7,7 +7,10 @@ import { subDays, isToday, isSameDay, format, differenceInHours, differenceInMin
 import { useHealth } from '../../context/HealthContext';
 import { useAuth } from '../../context/AuthContext';
 import { StepCounter } from '../../components/health/StepCounter';
-import { LineChart } from 'react-native-chart-kit';
+import { LineChart, PieChart, BarChart } from 'react-native-chart-kit';
+import { GraphContainer } from '../../components/common/GraphContainer';
+import { graphColors, graphGradients, getChartKitConfig, formatValue as formatGraphValue, formatLargeNumber } from '../../utils/graphConfig';
+import { prepareGraphPoints, prepareLastNDaysPoints, calculateTrend, getTrendIndicator } from '../../utils/graphHelpers';
 import { LinearGradient } from 'expo-linear-gradient';
 import { CircularProgress } from '../../components/common/CircularProgress';
 import { DailyHealthData } from '../../types';
@@ -307,35 +310,24 @@ export default function DashboardScreen() {
     const dataMap = new Map(weeklyData.map(d => [d.date, d]));
 
     if (selectedChart === 'steps') {
-      return days.map((day, index) => {
-        const dateStr = format(day, 'yyyy-MM-dd');
-        const value = dataMap.get(dateStr)?.steps || 0;
-        return {
-          date: day,
-          value: value,
-        };
-      });
+      return prepareLastNDaysPoints(
+        weeklyData.map(d => ({ date: d.date, value: d.steps })),
+        7
+      );
     } else if (selectedChart === 'calories') {
       // For calories, we'll use consumed as primary, but can show both
-      return days.map((day) => {
-        const dateStr = format(day, 'yyyy-MM-dd');
-        const consumed = dataMap.get(dateStr)?.caloriesConsumed || 0;
-        const burned = dataMap.get(dateStr)?.caloriesBurned || 0;
-        // Return net calories
-        return {
-          date: day,
-          value: consumed - burned,
-        };
-      });
+      return prepareLastNDaysPoints(
+        weeklyData.map(d => ({
+          date: d.date,
+          value: (d.caloriesConsumed || 0) - (d.caloriesBurned || 0)
+        })),
+        7
+      );
     } else {
-      return days.map((day) => {
-        const dateStr = format(day, 'yyyy-MM-dd');
-        const value = dataMap.get(dateStr)?.waterIntake || 0;
-        return {
-          date: day,
-          value: value,
-        };
-      });
+      return prepareLastNDaysPoints(
+        weeklyData.map(d => ({ date: d.date, value: d.waterIntake })),
+        7
+      );
     }
   };
 
@@ -347,15 +339,15 @@ export default function DashboardScreen() {
     switch (selectedChart) {
       case 'steps':
         return {
-          color: '#4CAF50',
-          gradientFillColors: ['#4CAF50', '#66BB6A'],
+          color: graphColors.steps,
+          gradientFillColors: graphGradients.steps,
           label: 'Steps',
-          formatValue: (value: number) => Math.round(value).toLocaleString(),
+          formatValue: (value: number) => formatLargeNumber(Math.round(value)),
           unit: '',
         };
       case 'calories':
         return {
-          color: '#FF6B35',
+          color: graphColors.caloriesConsumed,
           gradientFillColors: ['#FF6B35', '#FF8A65'],
           label: 'Net Calories',
           formatValue: (value: number) => `${Math.round(value) > 0 ? '+' : ''}${Math.round(value)}`,
@@ -363,14 +355,19 @@ export default function DashboardScreen() {
         };
       case 'water':
         return {
-          color: '#2196F3',
-          gradientFillColors: ['#2196F3', '#42A5F5'],
+          color: graphColors.water,
+          gradientFillColors: graphGradients.water,
           label: 'Water',
           formatValue: (value: number) => Math.round(value).toString(),
           unit: ' glasses',
         };
     }
   };
+
+  // Calculate trend for current chart
+  const values = graphPoints.map(p => p.value);
+  const trend = calculateTrend(values);
+  const trendInfo = getTrendIndicator(trend);
 
   const chartConfig = getChartConfig();
 
@@ -651,7 +648,19 @@ export default function DashboardScreen() {
               </TouchableOpacity>
             </View>
           </View>
-          <View style={styles.chartCard}>
+          <GraphContainer
+            title={`${chartConfig.label} Trend`}
+            subtitle={trendInfo.text}
+            style={styles.chartCard}
+          >
+            {/* Trend Indicator */}
+            <View style={styles.trendIndicator}>
+              <View style={[styles.trendDot, { backgroundColor: trendInfo.color }]} />
+              <Text style={[styles.trendText, { color: trendInfo.color }]}>
+                {trendInfo.text}
+              </Text>
+            </View>
+            
             {/* Interactive Skia-based Graph */}
             <View style={styles.graphContainer}>
               {LineGraph ? (
@@ -752,7 +761,7 @@ export default function DashboardScreen() {
             <Text style={styles.graphHelperText}>
               Touch and drag to explore data points
             </Text>
-          </View>
+          </GraphContainer>
         </View>
 
         {/* Calories Summary */}
@@ -1689,6 +1698,26 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 8,
     fontStyle: 'italic',
+  },
+  trendIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#F8F9FA',
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+  },
+  trendDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 8,
+  },
+  trendText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   pieChartCard: {
     backgroundColor: '#FAFAFA',
