@@ -73,10 +73,6 @@ export class HealthService {
       restingHeartRate,
       steps = 0,
       waterIntake = 0,
-      meals = [],
-      waterEntries = [],
-      workouts = [],
-      fastingSession,
     } = data;
 
     return this.prisma.dailyHealthData.upsert({
@@ -107,73 +103,6 @@ export class HealthService {
         restingHeartRate,
         steps,
         waterIntake,
-        meals: {
-          create: meals.map((meal: any) => ({
-            type: meal.type,
-            name: meal.name,
-            calories: meal.calories,
-            carbs: meal.carbs,
-            protein: meal.protein,
-            fat: meal.fat,
-            timestamp: new Date(meal.timestamp),
-          })),
-        },
-        waterEntries: {
-          create: waterEntries.map((entry: any) => ({
-            glasses: entry.glasses,
-            timestamp: new Date(entry.timestamp),
-          })),
-        },
-        workouts: {
-          create: workouts.map((workout: any) => ({
-            name: workout.name,
-            type: workout.type,
-            startTime: new Date(workout.startTime),
-            endTime: workout.endTime ? new Date(workout.endTime) : null,
-            duration: workout.duration,
-            totalCaloriesBurned: workout.totalCaloriesBurned,
-            distance: workout.distance,
-            averageSpeed: workout.averageSpeed,
-            maxSpeed: workout.maxSpeed,
-            exercises: {
-              create: workout.exercises?.map((exercise: any) => ({
-                name: exercise.name,
-                category: exercise.category,
-                duration: exercise.duration,
-                sets: exercise.sets,
-                reps: exercise.reps,
-                weight: exercise.weight,
-                caloriesBurned: exercise.caloriesBurned,
-                notes: exercise.notes,
-              })) || [],
-            },
-            locationPoints: {
-              create: workout.locationPoints?.map((point: any) => ({
-                latitude: point.latitude,
-                longitude: point.longitude,
-                timestamp: new Date(point.timestamp),
-                altitude: point.altitude,
-                speed: point.speed,
-                accuracy: point.accuracy,
-              })) || [],
-            },
-          })),
-        },
-        fastingSession: fastingSession
-          ? {
-              create: {
-                type: fastingSession.type,
-                startTime: new Date(fastingSession.startTime),
-                endTime: fastingSession.endTime
-                  ? new Date(fastingSession.endTime)
-                  : null,
-                duration: fastingSession.duration,
-                targetDuration: fastingSession.targetDuration,
-                eatingWindowStart: fastingSession.eatingWindowStart,
-                eatingWindowEnd: fastingSession.eatingWindowEnd,
-              },
-            }
-          : undefined,
       },
       include: {
         meals: true,

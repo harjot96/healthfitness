@@ -1,46 +1,30 @@
-import { apolloClient } from './client';
-import {
-  GET_DAILY_HEALTH_DATA,
-} from './queries';
-import {
-  SAVE_DAILY_HEALTH_DATA,
-  ADD_MEAL,
-  ADD_WATER_ENTRY,
-  ADD_WORKOUT,
-  SAVE_FASTING_SESSION,
-  UPDATE_RING_STATS,
-} from './mutations';
+import { apiClient } from './client';
 import { DailyHealthData, Meal, WaterEntry, Workout, FastingSession } from '../../types';
+import { format } from 'date-fns';
 
 /**
  * Get daily health data for a specific date
  */
 export const getDailyHealthData = async (date: string): Promise<DailyHealthData | null> => {
   try {
-    const { data } = await apolloClient.query({
-      query: GET_DAILY_HEALTH_DATA,
-      variables: { date },
-      fetchPolicy: 'network-only',
-    });
+    const data = await apiClient.get<any>(`/health/daily/${date}`);
 
-    if (!data?.dailyHealthData) {
+    if (!data) {
       return null;
     }
 
-    const healthData = data.dailyHealthData;
-
-    // Transform GraphQL response to DailyHealthData format
+    // Transform backend response to DailyHealthData format
     return {
-      date: healthData.date,
-      caloriesConsumed: healthData.caloriesConsumed || 0,
-      caloriesBurned: healthData.caloriesBurned || 0,
-      activeEnergyBurned: healthData.activeEnergyBurned || 0,
-      dietaryEnergyConsumed: healthData.dietaryEnergyConsumed || 0,
-      heartRate: healthData.heartRate || 0,
-      restingHeartRate: healthData.restingHeartRate || 0,
-      steps: healthData.steps || 0,
-      waterIntake: healthData.waterIntake || 0,
-      meals: (healthData.meals || []).map((meal: any) => ({
+      date: data.date,
+      caloriesConsumed: data.caloriesConsumed || 0,
+      caloriesBurned: data.caloriesBurned || 0,
+      activeEnergyBurned: data.activeEnergyBurned || 0,
+      dietaryEnergyConsumed: data.dietaryEnergyConsumed || 0,
+      heartRate: data.heartRate || 0,
+      restingHeartRate: data.restingHeartRate || 0,
+      steps: data.steps || 0,
+      waterIntake: data.waterIntake || 0,
+      meals: (data.meals || []).map((meal: any) => ({
         id: meal.id,
         type: meal.type,
         name: meal.name,
@@ -52,12 +36,12 @@ export const getDailyHealthData = async (date: string): Promise<DailyHealthData 
         },
         timestamp: new Date(meal.timestamp),
       })),
-      waterEntries: (healthData.waterEntries || []).map((entry: any) => ({
+      waterEntries: (data.waterEntries || []).map((entry: any) => ({
         id: entry.id,
         glasses: entry.glasses,
         timestamp: new Date(entry.timestamp),
       })),
-      workouts: (healthData.workouts || []).map((workout: any) => ({
+      workouts: (data.workouts || []).map((workout: any) => ({
         id: workout.id,
         name: workout.name,
         type: workout.type,
@@ -88,23 +72,26 @@ export const getDailyHealthData = async (date: string): Promise<DailyHealthData 
           accuracy: point.accuracy || 0,
         })),
       })),
-      fastingSession: healthData.fastingSession ? {
-        id: healthData.fastingSession.id,
-        type: healthData.fastingSession.type,
-        startTime: new Date(healthData.fastingSession.startTime),
-        endTime: healthData.fastingSession.endTime ? new Date(healthData.fastingSession.endTime) : undefined,
-        duration: healthData.fastingSession.duration || 0,
-        targetDuration: healthData.fastingSession.targetDuration || undefined,
-        eatingWindow: healthData.fastingSession.eatingWindowStart && healthData.fastingSession.eatingWindowEnd ? {
-          startHour: new Date(healthData.fastingSession.eatingWindowStart).getHours(),
-          endHour: new Date(healthData.fastingSession.eatingWindowEnd).getHours(),
-          value: `${new Date(healthData.fastingSession.eatingWindowStart).getHours()}-${new Date(healthData.fastingSession.eatingWindowEnd).getHours()}`,
+      fastingSession: data.fastingSession ? {
+        id: data.fastingSession.id,
+        type: data.fastingSession.type,
+        startTime: new Date(data.fastingSession.startTime),
+        endTime: data.fastingSession.endTime ? new Date(data.fastingSession.endTime) : undefined,
+        duration: data.fastingSession.duration || 0,
+        targetDuration: data.fastingSession.targetDuration || undefined,
+        eatingWindow: data.fastingSession.eatingWindowStart && data.fastingSession.eatingWindowEnd ? {
+          startHour: new Date(data.fastingSession.eatingWindowStart).getHours(),
+          endHour: new Date(data.fastingSession.eatingWindowEnd).getHours(),
+          value: `${new Date(data.fastingSession.eatingWindowStart).getHours()}-${new Date(data.fastingSession.eatingWindowEnd).getHours()}`,
         } : undefined,
       } : undefined,
     };
   } catch (error: any) {
+    if (error.status === 404) {
+      return null;
+    }
     console.error('Error getting daily health data:', error);
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to get health data';
+    const message = error.message || 'Failed to get health data';
     throw new Error(message);
   }
 };
@@ -114,24 +101,19 @@ export const getDailyHealthData = async (date: string): Promise<DailyHealthData 
  */
 export const saveDailyHealthData = async (data: DailyHealthData): Promise<void> => {
   try {
-    await apolloClient.mutate({
-      mutation: SAVE_DAILY_HEALTH_DATA,
-      variables: {
-        data: {
-          date: data.date,
-          caloriesConsumed: data.caloriesConsumed,
-          caloriesBurned: data.caloriesBurned,
-          activeEnergyBurned: data.activeEnergyBurned,
-          dietaryEnergyConsumed: data.dietaryEnergyConsumed,
-          heartRate: data.heartRate,
-          restingHeartRate: data.restingHeartRate,
-          steps: data.steps,
-          waterIntake: data.waterIntake,
-        },
-      },
+    await apiClient.post('/health/daily', {
+      date: data.date,
+      caloriesConsumed: data.caloriesConsumed,
+      caloriesBurned: data.caloriesBurned,
+      activeEnergyBurned: data.activeEnergyBurned,
+      dietaryEnergyConsumed: data.dietaryEnergyConsumed,
+      heartRate: data.heartRate,
+      restingHeartRate: data.restingHeartRate,
+      steps: data.steps,
+      waterIntake: data.waterIntake,
     });
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to save health data';
+    const message = error.message || 'Failed to save health data';
     throw new Error(message);
   }
 };
@@ -141,40 +123,33 @@ export const saveDailyHealthData = async (data: DailyHealthData): Promise<void> 
  */
 export const addMeal = async (date: string, meal: Meal): Promise<Meal> => {
   try {
-    const { data } = await apolloClient.mutate({
-      mutation: ADD_MEAL,
-      variables: {
-        date,
-        meal: {
-          type: meal.type,
-          name: meal.name,
-          calories: meal.calories,
-          carbs: meal.macros?.carbs || 0,
-          protein: meal.macros?.protein || 0,
-          fat: meal.macros?.fat || 0,
-          timestamp: meal.timestamp.toISOString(),
-        },
+    const response = await apiClient.post<any>('/health/meals', {
+      date,
+      meal: {
+        type: meal.type,
+        name: meal.name,
+        calories: meal.calories,
+        carbs: meal.macros?.carbs || 0,
+        protein: meal.macros?.protein || 0,
+        fat: meal.macros?.fat || 0,
+        timestamp: meal.timestamp.toISOString(),
       },
     });
 
-    if (!data?.addMeal) {
-      throw new Error('Failed to add meal');
-    }
-
     return {
-      id: data.addMeal.id,
-      type: data.addMeal.type,
-      name: data.addMeal.name,
-      calories: data.addMeal.calories,
+      id: response.id,
+      type: response.type,
+      name: response.name,
+      calories: response.calories,
       macros: {
-        carbs: data.addMeal.carbs || 0,
-        protein: data.addMeal.protein || 0,
-        fat: data.addMeal.fat || 0,
+        carbs: response.carbs || 0,
+        protein: response.protein || 0,
+        fat: response.fat || 0,
       },
-      timestamp: new Date(data.addMeal.timestamp),
+      timestamp: new Date(response.timestamp),
     };
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to add meal';
+    const message = error.message || 'Failed to add meal';
     throw new Error(message);
   }
 };
@@ -184,26 +159,18 @@ export const addMeal = async (date: string, meal: Meal): Promise<Meal> => {
  */
 export const addWaterEntry = async (date: string, entry: WaterEntry): Promise<number> => {
   try {
-    const { data } = await apolloClient.mutate({
-      mutation: ADD_WATER_ENTRY,
-      variables: {
-        date,
-        entry: {
-          glasses: entry.glasses,
-          timestamp: entry.timestamp.toISOString(),
-        },
+    await apiClient.post('/health/water', {
+      date,
+      entry: {
+        glasses: entry.glasses,
+        timestamp: entry.timestamp.toISOString(),
       },
     });
 
-    if (!data?.addWaterEntry) {
-      throw new Error('Failed to add water entry');
-    }
-
-    // Return the updated water intake (would need to query or calculate)
-    // For now, we'll need to refetch daily data to get updated waterIntake
+    // Return the glasses added (would need to refetch daily data to get updated waterIntake)
     return entry.glasses;
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to add water entry';
+    const message = error.message || 'Failed to add water entry';
     throw new Error(message);
   }
 };
@@ -213,63 +180,56 @@ export const addWaterEntry = async (date: string, entry: WaterEntry): Promise<nu
  */
 export const addWorkout = async (date: string, workout: Workout): Promise<Workout> => {
   try {
-    const { data } = await apolloClient.mutate({
-      mutation: ADD_WORKOUT,
-      variables: {
-        date,
-        workout: {
-          name: workout.name,
-          type: workout.type,
-          startTime: workout.startTime.toISOString(),
-          endTime: workout.endTime?.toISOString(),
-          duration: workout.duration,
-          totalCaloriesBurned: workout.totalCaloriesBurned,
-          distance: workout.distance,
-          averageSpeed: workout.averageSpeed,
-          maxSpeed: workout.maxSpeed,
-          exercises: workout.exercises?.map(ex => ({
-            name: ex.name,
-            category: ex.category,
-            duration: ex.duration,
-            sets: ex.sets,
-            reps: ex.reps,
-            weight: ex.weight,
-            caloriesBurned: ex.caloriesBurned,
-            notes: ex.notes,
-          })),
-          locationPoints: workout.locationTrack?.map(point => ({
-            latitude: point.latitude,
-            longitude: point.longitude,
-            timestamp: point.timestamp.toISOString(),
-            altitude: point.altitude,
-            speed: point.speed,
-            accuracy: point.accuracy,
-          })),
-        },
+    const response = await apiClient.post<any>('/health/workouts', {
+      date,
+      workout: {
+        name: workout.name,
+        type: workout.type,
+        startTime: workout.startTime.toISOString(),
+        endTime: workout.endTime?.toISOString(),
+        duration: workout.duration,
+        totalCaloriesBurned: workout.totalCaloriesBurned,
+        distance: workout.distance,
+        averageSpeed: workout.averageSpeed,
+        maxSpeed: workout.maxSpeed,
+        exercises: workout.exercises?.map(ex => ({
+          name: ex.name,
+          category: ex.category,
+          duration: ex.duration,
+          sets: ex.sets,
+          reps: ex.reps,
+          weight: ex.weight,
+          caloriesBurned: ex.caloriesBurned,
+          notes: ex.notes,
+        })),
+        locationPoints: workout.locationTrack?.map(point => ({
+          latitude: point.latitude,
+          longitude: point.longitude,
+          timestamp: point.timestamp.toISOString(),
+          altitude: point.altitude,
+          speed: point.speed,
+          accuracy: point.accuracy,
+        })),
       },
     });
 
-    if (!data?.addWorkout) {
-      throw new Error('Failed to add workout');
-    }
-
     return {
-      id: data.addWorkout.id,
-      name: data.addWorkout.name,
-      type: data.addWorkout.type,
-      startTime: new Date(data.addWorkout.startTime),
-      endTime: data.addWorkout.endTime ? new Date(data.addWorkout.endTime) : undefined,
-      duration: data.addWorkout.duration,
-      totalCaloriesBurned: data.addWorkout.totalCaloriesBurned,
-      distance: data.addWorkout.distance || 0,
-      averageSpeed: data.addWorkout.averageSpeed || 0,
-      maxSpeed: data.addWorkout.maxSpeed || 0,
-        exercises: workout.exercises || [],
-        locationTrack: workout.locationTrack || [],
-        date: date,
+      id: response.id,
+      name: response.name,
+      type: response.type,
+      startTime: new Date(response.startTime),
+      endTime: response.endTime ? new Date(response.endTime) : undefined,
+      duration: response.duration,
+      totalCaloriesBurned: response.totalCaloriesBurned,
+      distance: response.distance || 0,
+      averageSpeed: response.averageSpeed || 0,
+      maxSpeed: response.maxSpeed || 0,
+      exercises: workout.exercises || [],
+      locationTrack: workout.locationTrack || [],
+      date: date,
     };
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to add workout';
+    const message = error.message || 'Failed to add workout';
     throw new Error(message);
   }
 };
@@ -279,37 +239,30 @@ export const addWorkout = async (date: string, workout: Workout): Promise<Workou
  */
 export const saveFastingSession = async (date: string, session: FastingSession): Promise<FastingSession> => {
   try {
-    const { data } = await apolloClient.mutate({
-      mutation: SAVE_FASTING_SESSION,
-      variables: {
-        date,
-        session: {
-          type: session.type,
-          startTime: session.startTime.toISOString(),
-          endTime: session.endTime?.toISOString(),
-          duration: session.duration,
-          targetDuration: session.targetDuration,
-          eatingWindowStart: session.eatingWindow?.startHour ? new Date().setHours(session.eatingWindow.startHour, 0, 0, 0) : undefined,
-          eatingWindowEnd: session.eatingWindow?.endHour ? new Date().setHours(session.eatingWindow.endHour, 0, 0, 0) : undefined,
-        },
+    const response = await apiClient.post<any>('/health/fasting', {
+      date,
+      session: {
+        type: session.type,
+        startTime: session.startTime.toISOString(),
+        endTime: session.endTime?.toISOString(),
+        duration: session.duration,
+        targetDuration: session.targetDuration,
+        eatingWindowStart: session.eatingWindow?.startHour ? new Date().setHours(session.eatingWindow.startHour, 0, 0, 0) : undefined,
+        eatingWindowEnd: session.eatingWindow?.endHour ? new Date().setHours(session.eatingWindow.endHour, 0, 0, 0) : undefined,
       },
     });
 
-    if (!data?.saveFastingSession) {
-      throw new Error('Failed to save fasting session');
-    }
-
     return {
-      id: data.saveFastingSession.id,
-      type: data.saveFastingSession.type,
-      startTime: new Date(data.saveFastingSession.startTime),
-      endTime: data.saveFastingSession.endTime ? new Date(data.saveFastingSession.endTime) : undefined,
-      duration: data.saveFastingSession.duration,
-      targetDuration: data.saveFastingSession.targetDuration,
+      id: response.id,
+      type: response.type,
+      startTime: new Date(response.startTime),
+      endTime: response.endTime ? new Date(response.endTime) : undefined,
+      duration: response.duration,
+      targetDuration: response.targetDuration,
       eatingWindow: session.eatingWindow,
     };
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to save fasting session';
+    const message = error.message || 'Failed to save fasting session';
     throw new Error(message);
   }
 };
@@ -327,22 +280,17 @@ export const updateRingStats = async (stats: {
   goalMinutes: number;
 }): Promise<void> => {
   try {
-    await apolloClient.mutate({
-      mutation: UPDATE_RING_STATS,
-      variables: {
-        stats: {
-          date: stats.date.replace(/-/g, ''), // Format as yyyyMMdd
-          caloriesBurned: stats.caloriesBurned,
-          steps: stats.steps,
-          workoutMinutes: stats.workoutMinutes,
-          goalCalories: stats.goalCalories,
-          goalSteps: stats.goalSteps,
-          goalMinutes: stats.goalMinutes,
-        },
-      },
+    await apiClient.put('/community/ring-stats', {
+      date: stats.date.replace(/-/g, ''), // Format as yyyyMMdd
+      caloriesBurned: stats.caloriesBurned,
+      steps: stats.steps,
+      workoutMinutes: stats.workoutMinutes,
+      goalCalories: stats.goalCalories,
+      goalSteps: stats.goalSteps,
+      goalMinutes: stats.goalMinutes,
     });
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to update ring stats';
+    const message = error.message || 'Failed to update ring stats';
     throw new Error(message);
   }
 };
@@ -363,25 +311,19 @@ export const updateHealthMetrics = async (date: string, metrics: {
     // Get current data first
     const currentData = await getDailyHealthData(date);
     
-    await apolloClient.mutate({
-      mutation: SAVE_DAILY_HEALTH_DATA,
-      variables: {
-        data: {
-          date,
-          caloriesConsumed: currentData?.caloriesConsumed || 0,
-          caloriesBurned: metrics.caloriesBurned ?? currentData?.caloriesBurned ?? 0,
-          activeEnergyBurned: metrics.activeEnergyBurned ?? currentData?.activeEnergyBurned ?? 0,
-          dietaryEnergyConsumed: metrics.dietaryEnergyConsumed ?? currentData?.dietaryEnergyConsumed ?? 0,
-          heartRate: metrics.heartRate ?? currentData?.heartRate ?? 0,
-          restingHeartRate: metrics.restingHeartRate ?? currentData?.restingHeartRate ?? 0,
-          steps: metrics.steps ?? currentData?.steps ?? 0,
-          waterIntake: currentData?.waterIntake || 0,
-        },
-      },
+    await apiClient.post('/health/daily', {
+      date,
+      caloriesConsumed: currentData?.caloriesConsumed || 0,
+      caloriesBurned: metrics.caloriesBurned ?? currentData?.caloriesBurned ?? 0,
+      activeEnergyBurned: metrics.activeEnergyBurned ?? currentData?.activeEnergyBurned ?? 0,
+      dietaryEnergyConsumed: metrics.dietaryEnergyConsumed ?? currentData?.dietaryEnergyConsumed ?? 0,
+      heartRate: metrics.heartRate ?? currentData?.heartRate ?? 0,
+      restingHeartRate: metrics.restingHeartRate ?? currentData?.restingHeartRate ?? 0,
+      steps: metrics.steps ?? currentData?.steps ?? 0,
+      waterIntake: currentData?.waterIntake || 0,
     });
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to update health metrics';
+    const message = error.message || 'Failed to update health metrics';
     throw new Error(message);
   }
 };
-

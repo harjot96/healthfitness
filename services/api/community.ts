@@ -1,25 +1,4 @@
-import { apolloClient } from './client';
-import {
-  GET_FRIENDS,
-  GET_FRIEND_REQUESTS,
-  GET_CLANS,
-  GET_CLAN_INVITES,
-  GET_NOTIFICATIONS,
-  GET_UNREAD_NOTIFICATION_COUNT,
-} from './queries';
-import {
-  SEND_FRIEND_REQUEST,
-  ACCEPT_FRIEND_REQUEST,
-  REJECT_FRIEND_REQUEST,
-  CANCEL_FRIEND_REQUEST,
-  REMOVE_FRIEND,
-  CREATE_CLAN,
-  INVITE_TO_CLAN,
-  RESPOND_CLAN_INVITE,
-  LEAVE_CLAN,
-  MARK_NOTIFICATION_READ,
-  MARK_ALL_NOTIFICATIONS_READ,
-} from './mutations';
+import { apiClient } from './client';
 import { Friend, FriendRequest, Clan, ClanInvite, Notification } from '../../types';
 
 /**
@@ -27,16 +6,9 @@ import { Friend, FriendRequest, Clan, ClanInvite, Notification } from '../../typ
  */
 export const getFriends = async (): Promise<Friend[]> => {
   try {
-    const { data } = await apolloClient.query({
-      query: GET_FRIENDS,
-      fetchPolicy: 'network-only',
-    });
+    const friends = await apiClient.get<any[]>('/community/friends');
 
-    if (!data?.friends) {
-      return [];
-    }
-
-    return data.friends.map((f: any) => ({
+    return friends.map((f: any) => ({
       friendUid: f.friendUid || f.friend?.id,
       createdAt: new Date(f.createdAt),
       ringsShare: f.ringsShare || false,
@@ -48,7 +20,7 @@ export const getFriends = async (): Promise<Friend[]> => {
       } : undefined,
     }));
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to get friends';
+    const message = error.message || 'Failed to get friends';
     throw new Error(message);
   }
 };
@@ -61,17 +33,13 @@ export const getFriendRequests = async (): Promise<{
   received: FriendRequest[];
 }> => {
   try {
-    const { data } = await apolloClient.query({
-      query: GET_FRIEND_REQUESTS,
-      fetchPolicy: 'network-only',
-    });
-
-    if (!data?.friendRequests) {
-      return { sent: [], received: [] };
-    }
+    const requests = await apiClient.get<{
+      sent: any[];
+      received: any[];
+    }>('/community/friend-requests');
 
     return {
-      sent: (data.friendRequests.sent || []).map((req: any) => ({
+      sent: (requests.sent || []).map((req: any) => ({
         fromUid: req.fromUid,
         toUid: req.toUid,
         status: req.status,
@@ -84,7 +52,7 @@ export const getFriendRequests = async (): Promise<{
           photoURL: req.toUser.photoURL || '',
         } : undefined,
       })),
-      received: (data.friendRequests.received || []).map((req: any) => ({
+      received: (requests.received || []).map((req: any) => ({
         fromUid: req.fromUid,
         toUid: req.toUid,
         status: req.status,
@@ -99,7 +67,7 @@ export const getFriendRequests = async (): Promise<{
       })),
     };
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to get friend requests';
+    const message = error.message || 'Failed to get friend requests';
     throw new Error(message);
   }
 };
@@ -109,16 +77,10 @@ export const getFriendRequests = async (): Promise<{
  */
 export const sendFriendRequest = async (toUid: string): Promise<FriendRequest> => {
   try {
-    const { data } = await apolloClient.mutate({
-      mutation: SEND_FRIEND_REQUEST,
-      variables: { toUid },
+    const req = await apiClient.post<any>('/community/friend-requests', {
+      toUid,
     });
 
-    if (!data?.sendFriendRequest) {
-      throw new Error('Failed to send friend request');
-    }
-
-    const req = data.sendFriendRequest;
     return {
       fromUid: req.fromUid,
       toUid: req.toUid,
@@ -127,7 +89,7 @@ export const sendFriendRequest = async (toUid: string): Promise<FriendRequest> =
       updatedAt: new Date(req.updatedAt || req.createdAt),
     };
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to send friend request';
+    const message = error.message || 'Failed to send friend request';
     throw new Error(message);
   }
 };
@@ -137,16 +99,8 @@ export const sendFriendRequest = async (toUid: string): Promise<FriendRequest> =
  */
 export const acceptFriendRequest = async (fromUid: string): Promise<Friend> => {
   try {
-    const { data } = await apolloClient.mutate({
-      mutation: ACCEPT_FRIEND_REQUEST,
-      variables: { fromUid },
-    });
+    const friend = await apiClient.post<any>(`/community/friend-requests/${fromUid}/accept`);
 
-    if (!data?.acceptFriendRequest) {
-      throw new Error('Failed to accept friend request');
-    }
-
-    const friend = data.acceptFriendRequest;
     return {
       friendUid: friend.friendUid || friend.friend?.id,
       createdAt: new Date(friend.createdAt),
@@ -159,7 +113,7 @@ export const acceptFriendRequest = async (fromUid: string): Promise<Friend> => {
       } : undefined,
     };
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to accept friend request';
+    const message = error.message || 'Failed to accept friend request';
     throw new Error(message);
   }
 };
@@ -169,12 +123,9 @@ export const acceptFriendRequest = async (fromUid: string): Promise<Friend> => {
  */
 export const rejectFriendRequest = async (fromUid: string): Promise<void> => {
   try {
-    await apolloClient.mutate({
-      mutation: REJECT_FRIEND_REQUEST,
-      variables: { fromUid },
-    });
+    await apiClient.post(`/community/friend-requests/${fromUid}/reject`);
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to reject friend request';
+    const message = error.message || 'Failed to reject friend request';
     throw new Error(message);
   }
 };
@@ -184,12 +135,9 @@ export const rejectFriendRequest = async (fromUid: string): Promise<void> => {
  */
 export const cancelFriendRequest = async (toUid: string): Promise<void> => {
   try {
-    await apolloClient.mutate({
-      mutation: CANCEL_FRIEND_REQUEST,
-      variables: { toUid },
-    });
+    await apiClient.delete(`/community/friend-requests/${toUid}`);
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to cancel friend request';
+    const message = error.message || 'Failed to cancel friend request';
     throw new Error(message);
   }
 };
@@ -199,12 +147,9 @@ export const cancelFriendRequest = async (toUid: string): Promise<void> => {
  */
 export const removeFriend = async (friendUid: string): Promise<void> => {
   try {
-    await apolloClient.mutate({
-      mutation: REMOVE_FRIEND,
-      variables: { friendUid },
-    });
+    await apiClient.delete(`/community/friends/${friendUid}`);
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to remove friend';
+    const message = error.message || 'Failed to remove friend';
     throw new Error(message);
   }
 };
@@ -214,16 +159,9 @@ export const removeFriend = async (friendUid: string): Promise<void> => {
  */
 export const getClans = async (): Promise<Clan[]> => {
   try {
-    const { data } = await apolloClient.query({
-      query: GET_CLANS,
-      fetchPolicy: 'network-only',
-    });
+    const clans = await apiClient.get<any[]>('/community/clans');
 
-    if (!data?.clans) {
-      return [];
-    }
-
-    return data.clans.map((clan: any) => ({
+    return clans.map((clan: any) => ({
       id: clan.id,
       name: clan.name,
       description: clan.description || '',
@@ -244,7 +182,7 @@ export const getClans = async (): Promise<Clan[]> => {
       })),
     }));
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to get clans';
+    const message = error.message || 'Failed to get clans';
     throw new Error(message);
   }
 };
@@ -254,16 +192,9 @@ export const getClans = async (): Promise<Clan[]> => {
  */
 export const getClanInvites = async (): Promise<ClanInvite[]> => {
   try {
-    const { data } = await apolloClient.query({
-      query: GET_CLAN_INVITES,
-      fetchPolicy: 'network-only',
-    });
+    const invites = await apiClient.get<any[]>('/community/clans/invites');
 
-    if (!data?.clanInvites) {
-      return [];
-    }
-
-    return data.clanInvites.map((invite: any) => ({
+    return invites.map((invite: any) => ({
       id: invite.id,
       clanId: invite.clanId,
       fromUid: invite.fromUid,
@@ -283,7 +214,7 @@ export const getClanInvites = async (): Promise<ClanInvite[]> => {
       } : undefined,
     }));
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to get clan invites';
+    const message = error.message || 'Failed to get clan invites';
     throw new Error(message);
   }
 };
@@ -293,16 +224,12 @@ export const getClanInvites = async (): Promise<ClanInvite[]> => {
  */
 export const createClan = async (name: string, description?: string, privacy?: string): Promise<Clan> => {
   try {
-    const { data } = await apolloClient.mutate({
-      mutation: CREATE_CLAN,
-      variables: { name, description, privacy },
+    const clan = await apiClient.post<any>('/community/clans', {
+      name,
+      description,
+      privacy,
     });
 
-    if (!data?.createClan) {
-      throw new Error('Failed to create clan');
-    }
-
-    const clan = data.createClan;
     return {
       id: clan.id,
       name: clan.name,
@@ -314,7 +241,7 @@ export const createClan = async (name: string, description?: string, privacy?: s
       members: [],
     };
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to create clan';
+    const message = error.message || 'Failed to create clan';
     throw new Error(message);
   }
 };
@@ -324,16 +251,10 @@ export const createClan = async (name: string, description?: string, privacy?: s
  */
 export const inviteToClan = async (clanId: string, toUid: string): Promise<ClanInvite> => {
   try {
-    const { data } = await apolloClient.mutate({
-      mutation: INVITE_TO_CLAN,
-      variables: { clanId, toUid },
+    const invite = await apiClient.post<any>(`/community/clans/${clanId}/invite`, {
+      toUid,
     });
 
-    if (!data?.inviteToClan) {
-      throw new Error('Failed to invite to clan');
-    }
-
-    const invite = data.inviteToClan;
     return {
       id: invite.id,
       clanId: invite.clanId,
@@ -343,7 +264,7 @@ export const inviteToClan = async (clanId: string, toUid: string): Promise<ClanI
       createdAt: new Date(invite.createdAt),
     };
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to invite to clan';
+    const message = error.message || 'Failed to invite to clan';
     throw new Error(message);
   }
 };
@@ -353,12 +274,19 @@ export const inviteToClan = async (clanId: string, toUid: string): Promise<ClanI
  */
 export const respondClanInvite = async (clanId: string, action: 'accept' | 'reject'): Promise<void> => {
   try {
-    await apolloClient.mutate({
-      mutation: RESPOND_CLAN_INVITE,
-      variables: { clanId, action },
+    // First get the invite ID
+    const invites = await getClanInvites();
+    const invite = invites.find(inv => inv.clanId === clanId && inv.status === 'pending');
+    
+    if (!invite) {
+      throw new Error('Clan invite not found');
+    }
+
+    await apiClient.post(`/community/clans/${clanId}/invites/${invite.id}/respond`, {
+      action,
     });
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to respond to clan invite';
+    const message = error.message || 'Failed to respond to clan invite';
     throw new Error(message);
   }
 };
@@ -368,12 +296,9 @@ export const respondClanInvite = async (clanId: string, action: 'accept' | 'reje
  */
 export const leaveClan = async (clanId: string): Promise<void> => {
   try {
-    await apolloClient.mutate({
-      mutation: LEAVE_CLAN,
-      variables: { clanId },
-    });
+    await apiClient.delete(`/community/clans/${clanId}/leave`);
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to leave clan';
+    const message = error.message || 'Failed to leave clan';
     throw new Error(message);
   }
 };
@@ -383,17 +308,16 @@ export const leaveClan = async (clanId: string): Promise<void> => {
  */
 export const getNotifications = async (limit?: number, offset?: number): Promise<Notification[]> => {
   try {
-    const { data } = await apolloClient.query({
-      query: GET_NOTIFICATIONS,
-      variables: { limit, offset },
-      fetchPolicy: 'network-only',
-    });
+    const params = new URLSearchParams();
+    if (limit) params.append('limit', limit.toString());
+    if (offset) params.append('offset', offset.toString());
+    
+    const queryString = params.toString();
+    const endpoint = `/community/notifications${queryString ? `?${queryString}` : ''}`;
+    
+    const notifications = await apiClient.get<any[]>(endpoint);
 
-    if (!data?.notifications) {
-      return [];
-    }
-
-    return data.notifications.map((notif: any) => ({
+    return notifications.map((notif: any) => ({
       id: notif.id,
       type: notif.type,
       title: notif.title,
@@ -403,7 +327,7 @@ export const getNotifications = async (limit?: number, offset?: number): Promise
       createdAt: new Date(notif.createdAt),
     }));
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to get notifications';
+    const message = error.message || 'Failed to get notifications';
     throw new Error(message);
   }
 };
@@ -413,12 +337,8 @@ export const getNotifications = async (limit?: number, offset?: number): Promise
  */
 export const getUnreadNotificationCount = async (): Promise<number> => {
   try {
-    const { data } = await apolloClient.query({
-      query: GET_UNREAD_NOTIFICATION_COUNT,
-      fetchPolicy: 'network-only',
-    });
-
-    return data?.unreadNotificationCount || 0;
+    const count = await apiClient.get<number>('/community/notifications/unread-count');
+    return count || 0;
   } catch (error: any) {
     console.error('Error getting unread notification count:', error);
     return 0;
@@ -430,12 +350,9 @@ export const getUnreadNotificationCount = async (): Promise<number> => {
  */
 export const markNotificationRead = async (notificationId: string): Promise<void> => {
   try {
-    await apolloClient.mutate({
-      mutation: MARK_NOTIFICATION_READ,
-      variables: { notificationId },
-    });
+    await apiClient.put(`/community/notifications/${notificationId}/read`);
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to mark notification as read';
+    const message = error.message || 'Failed to mark notification as read';
     throw new Error(message);
   }
 };
@@ -445,12 +362,9 @@ export const markNotificationRead = async (notificationId: string): Promise<void
  */
 export const markAllNotificationsRead = async (): Promise<void> => {
   try {
-    await apolloClient.mutate({
-      mutation: MARK_ALL_NOTIFICATIONS_READ,
-    });
+    await apiClient.put('/community/notifications/read-all');
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to mark all notifications as read';
+    const message = error.message || 'Failed to mark all notifications as read';
     throw new Error(message);
   }
 };
-

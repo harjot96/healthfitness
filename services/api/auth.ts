@@ -1,6 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { apolloClient, updateAuthToken, getAuthToken } from './client';
-import { REGISTER, LOGIN, REFRESH_TOKEN, UPDATE_PROFILE, GET_ME } from './queries';
+import { apiClient, updateAuthToken, getAuthToken } from './client';
 import { User, UserProfile } from '../../types';
 
 export interface AuthResponse {
@@ -10,7 +9,7 @@ export interface AuthResponse {
     id: string;
     email: string;
     displayName: string;
-    photoURL: string;
+    photoURL?: string;
   };
 }
 
@@ -24,29 +23,33 @@ export const signUp = async (
   username?: string
 ): Promise<AuthResponse> => {
   try {
-    const { data } = await apolloClient.mutate({
-      mutation: REGISTER,
-      variables: {
-        email,
-        password,
-        displayName,
-        username,
-      },
-    });
-
-    if (!data?.register) {
-      throw new Error('Registration failed');
-    }
-
-    const { token, refreshToken, user } = data.register;
+    const response = await apiClient.post<{
+      token: string;
+      refreshToken: string;
+      user: {
+        id: string;
+        email: string;
+        displayName: string;
+        photoURL?: string;
+      };
+    }>('/auth/register', {
+      email,
+      password,
+      displayName,
+      username,
+    }, { skipAuth: true });
 
     // Store tokens
-    await updateAuthToken(token);
-    await AsyncStorage.setItem('refreshToken', refreshToken);
+    await updateAuthToken(response.token);
+    await apiClient.updateRefreshToken(response.refreshToken);
 
-    return { token, refreshToken, user };
+    return {
+      token: response.token,
+      refreshToken: response.refreshToken,
+      user: response.user,
+    };
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to sign up';
+    const message = error.message || 'Failed to sign up';
     throw new Error(message);
   }
 };
@@ -56,27 +59,31 @@ export const signUp = async (
  */
 export const signIn = async (email: string, password: string): Promise<AuthResponse> => {
   try {
-    const { data } = await apolloClient.mutate({
-      mutation: LOGIN,
-      variables: {
-        email,
-        password,
-      },
-    });
-
-    if (!data?.login) {
-      throw new Error('Login failed');
-    }
-
-    const { token, refreshToken, user } = data.login;
+    const response = await apiClient.post<{
+      token: string;
+      refreshToken: string;
+      user: {
+        id: string;
+        email: string;
+        displayName: string;
+        photoURL?: string;
+      };
+    }>('/auth/login', {
+      email,
+      password,
+    }, { skipAuth: true });
 
     // Store tokens
-    await updateAuthToken(token);
-    await AsyncStorage.setItem('refreshToken', refreshToken);
+    await updateAuthToken(response.token);
+    await apiClient.updateRefreshToken(response.refreshToken);
 
-    return { token, refreshToken, user };
+    return {
+      token: response.token,
+      refreshToken: response.refreshToken,
+      user: response.user,
+    };
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to sign in';
+    const message = error.message || 'Failed to sign in';
     throw new Error(message);
   }
 };
@@ -86,9 +93,7 @@ export const signIn = async (email: string, password: string): Promise<AuthRespo
  */
 export const logout = async (): Promise<void> => {
   try {
-    await updateAuthToken(null);
-    await AsyncStorage.removeItem('refreshToken');
-    await apolloClient.clearStore();
+    await apiClient.clearTokens();
   } catch (error) {
     console.error('Error signing out:', error);
   }
@@ -104,24 +109,29 @@ export const getCurrentUser = async (): Promise<User | null> => {
       return null;
     }
 
-    const { data } = await apolloClient.query({
-      query: GET_ME,
-      fetchPolicy: 'network-only',
-    });
-
-    if (!data?.me) {
-      return null;
-    }
+    const user = await apiClient.get<{
+      id: string;
+      email: string;
+      displayName: string;
+      photoURL?: string;
+      profile?: {
+        age?: number;
+        weight?: number;
+        height?: number;
+        activityLevel?: string;
+        gender?: string;
+      };
+    }>('/auth/me');
 
     return {
-      uid: data.me.id,
-      email: data.me.email,
-      profile: data.me.profile ? {
-        age: data.me.profile.age || 0,
-        weight: data.me.profile.weight || 0,
-        height: data.me.profile.height || 0,
-        activityLevel: (data.me.profile.activityLevel as any) || 'sedentary',
-        gender: (data.me.profile.gender as any) || 'other',
+      uid: user.id,
+      email: user.email,
+      profile: user.profile ? {
+        age: user.profile.age || 0,
+        weight: user.profile.weight || 0,
+        height: user.profile.height || 0,
+        activityLevel: (user.profile.activityLevel as any) || 'sedentary',
+        gender: (user.profile.gender as any) || 'other',
       } : undefined,
     };
   } catch (error) {
@@ -135,21 +145,26 @@ export const getCurrentUser = async (): Promise<User | null> => {
  */
 export const getUserProfile = async (): Promise<UserProfile | null> => {
   try {
-    const { data } = await apolloClient.query({
-      query: GET_ME,
-      fetchPolicy: 'network-only',
-    });
+    const user = await apiClient.get<{
+      profile?: {
+        age?: number;
+        weight?: number;
+        height?: number;
+        activityLevel?: string;
+        gender?: string;
+      };
+    }>('/auth/me');
 
-    if (!data?.me?.profile) {
+    if (!user.profile) {
       return null;
     }
 
     return {
-      age: data.me.profile.age || 0,
-      weight: data.me.profile.weight || 0,
-      height: data.me.profile.height || 0,
-      activityLevel: (data.me.profile.activityLevel as any) || 'sedentary',
-      gender: (data.me.profile.gender as any) || 'other',
+      age: user.profile.age || 0,
+      weight: user.profile.weight || 0,
+      height: user.profile.height || 0,
+      activityLevel: (user.profile.activityLevel as any) || 'sedentary',
+      gender: (user.profile.gender as any) || 'other',
     };
   } catch (error) {
     console.error('Error getting user profile:', error);
@@ -162,20 +177,15 @@ export const getUserProfile = async (): Promise<UserProfile | null> => {
  */
 export const saveUserProfile = async (profile: UserProfile): Promise<void> => {
   try {
-    await apolloClient.mutate({
-      mutation: UPDATE_PROFILE,
-      variables: {
-        profile: {
-          age: profile.age,
-          weight: profile.weight,
-          height: profile.height,
-          activityLevel: profile.activityLevel,
-          gender: profile.gender,
-        },
-      },
+    await apiClient.put('/auth/profile', {
+      age: profile.age,
+      weight: profile.weight,
+      height: profile.height,
+      activityLevel: profile.activityLevel,
+      gender: profile.gender,
     });
   } catch (error: any) {
-    const message = error.graphQLErrors?.[0]?.message || error.message || 'Failed to save profile';
+    const message = error.message || 'Failed to save profile';
     throw new Error(message);
   }
 };
@@ -185,29 +195,23 @@ export const saveUserProfile = async (profile: UserProfile): Promise<void> => {
  */
 export const refreshAccessToken = async (): Promise<string | null> => {
   try {
-    const refreshToken = await AsyncStorage.getItem('refreshToken');
+    const refreshToken = await apiClient.getRefreshToken();
     if (!refreshToken) {
       return null;
     }
 
-    const { data } = await apolloClient.mutate({
-      mutation: REFRESH_TOKEN,
-      variables: {
-        refreshToken,
-      },
-    });
-
-    if (!data?.refreshToken) {
-      return null;
-    }
-
-    const { token, refreshToken: newRefreshToken } = data.refreshToken;
+    const response = await apiClient.post<{
+      token: string;
+      refreshToken: string;
+    }>('/auth/refresh', {
+      refreshToken,
+    }, { skipAuth: true });
 
     // Update tokens
-    await updateAuthToken(token);
-    await AsyncStorage.setItem('refreshToken', newRefreshToken);
+    await updateAuthToken(response.token);
+    await apiClient.updateRefreshToken(response.refreshToken);
 
-    return token;
+    return response.token;
   } catch (error) {
     console.error('Error refreshing token:', error);
     await logout();
@@ -218,11 +222,10 @@ export const refreshAccessToken = async (): Promise<string | null> => {
 // OAuth sign-in functions (to be implemented with backend later)
 export const signInWithGoogle = async (): Promise<void> => {
   // TODO: Implement Google OAuth with backend
-  throw new Error('Google sign-in not yet implemented with GraphQL backend');
+  throw new Error('Google sign-in not yet implemented');
 };
 
 export const signInWithApple = async (): Promise<void> => {
   // TODO: Implement Apple OAuth with backend
-  throw new Error('Apple sign-in not yet implemented with GraphQL backend');
+  throw new Error('Apple sign-in not yet implemented');
 };
-
