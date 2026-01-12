@@ -167,8 +167,11 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               fastingSession: updatedSession,
             };
             setTodayData(updatedData);
-            saveDailyHealthData(updatedData).catch(error => {
+            saveFastingSession(latestData.date, updatedSession).catch(error => {
               console.error('[HealthContext] Error auto-saving fasting session:', error);
+            });
+            saveDailyHealthData(updatedData).catch(error => {
+              console.error('[HealthContext] Error auto-saving daily health data:', error);
             });
           }
         }
@@ -436,11 +439,38 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     
     try {
       console.log('[HealthContext] Saving today data...');
-      await saveDailyHealthData(currentData);
+      let dataToSave = currentData;
+
+      if (currentData.fastingSession) {
+        let sessionToSave = currentData.fastingSession;
+        if (!currentData.fastingSession.endTime) {
+          const durationHours = (Date.now() - currentData.fastingSession.startTime.getTime()) / (1000 * 60 * 60);
+          sessionToSave = {
+            ...currentData.fastingSession,
+            duration: durationHours,
+          };
+          dataToSave = {
+            ...currentData,
+            fastingSession: sessionToSave,
+          };
+        }
+
+        try {
+          await saveFastingSession(currentData.date, sessionToSave);
+        } catch (error) {
+          console.error('[HealthContext] Error saving fasting session:', error);
+        }
+      }
+
+      if (dataToSave !== currentData) {
+        todayDataRef.current = dataToSave;
+      }
+
+      await saveDailyHealthData(dataToSave);
       console.log('[HealthContext] Successfully saved today data');
       
       // Update ring stats
-      await updateRingStatsToBackend(currentData);
+      await updateRingStatsToBackend(dataToSave);
     } catch (error: any) {
       console.error('[HealthContext] Error saving today data:', error);
       console.error('[HealthContext] Error details:', {

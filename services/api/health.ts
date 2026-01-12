@@ -79,10 +79,10 @@ export const getDailyHealthData = async (date: string): Promise<DailyHealthData 
         endTime: data.fastingSession.endTime ? new Date(data.fastingSession.endTime) : undefined,
         duration: data.fastingSession.duration || 0,
         targetDuration: data.fastingSession.targetDuration || undefined,
-        eatingWindow: data.fastingSession.eatingWindowStart && data.fastingSession.eatingWindowEnd ? {
-          startHour: new Date(data.fastingSession.eatingWindowStart).getHours(),
-          endHour: new Date(data.fastingSession.eatingWindowEnd).getHours(),
-          value: `${new Date(data.fastingSession.eatingWindowStart).getHours()}-${new Date(data.fastingSession.eatingWindowEnd).getHours()}`,
+        eatingWindow: data.fastingSession.eatingWindowStart !== null && data.fastingSession.eatingWindowStart !== undefined && data.fastingSession.eatingWindowEnd !== null && data.fastingSession.eatingWindowEnd !== undefined ? {
+          startHour: data.fastingSession.eatingWindowStart,
+          endHour: data.fastingSession.eatingWindowEnd,
+          value: `${data.fastingSession.eatingWindowStart}-${data.fastingSession.eatingWindowEnd}`,
         } : undefined,
       } : undefined,
     };
@@ -247,8 +247,8 @@ export const saveFastingSession = async (date: string, session: FastingSession):
         endTime: session.endTime?.toISOString(),
         duration: session.duration,
         targetDuration: session.targetDuration,
-        eatingWindowStart: session.eatingWindow?.startHour ? new Date().setHours(session.eatingWindow.startHour, 0, 0, 0) : undefined,
-        eatingWindowEnd: session.eatingWindow?.endHour ? new Date().setHours(session.eatingWindow.endHour, 0, 0, 0) : undefined,
+        eatingWindowStart: session.eatingWindow?.startHour,
+        eatingWindowEnd: session.eatingWindow?.endHour,
       },
     });
 
